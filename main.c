@@ -736,10 +736,10 @@ void progControl(Prog *item) {
             break;
         case REG:
             if (sensorRead(item->sensor)) {
-                item->output = pid(&item->pid, item->goal, item->sensor->value.temp);
-                //item->output = pidwt(&item->pid, item->goal, item->sensor->value.temp, item->sensor->value.tm);
+                item->output = pid(&item->pid, item->goal, item->sensor->value.value);
+                //item->output = pidwt(&item->pid, item->goal, item->sensor->value.value, item->sensor->value.tm);
 #ifdef MODE_DEBUG
-                printf("prog_id=%d: state=REG goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.temp, item->output);
+                printf("prog_id=%d: state=REG goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.value, item->output);
                 //  printf("pid_mode=%c pid_ie=%.1f\n", item->pid.mode, item->pid.integral_error);
 #endif
                 controlEM(item->em, item->output);
@@ -747,12 +747,12 @@ void progControl(Prog *item) {
             break;
         case TUNE:
             if (sensorRead(item->sensor)) {
-                if (pidAutoTune(&item->pid_at, &item->pid, item->sensor->value.temp, &item->output)) {
+                if (pidAutoTune(&item->pid_at, &item->pid, item->sensor->value.value, &item->output)) {
                     saveTune(item->id, item->pid.kp, item->pid.ki, item->pid.kd);
                     item->state = REG;
                 }
 #ifdef MODE_DEBUG
-                printf("prog_id=%d: state=TUNE goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.temp, item->output);
+                printf("prog_id=%d: state=TUNE goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.value, item->output);
                 // printf("pid_mode=%c pid_ie=%.1f\n", item->pid.mode, item->pid.integral_error);
 #endif
                 controlEM(item->em, item->output);
