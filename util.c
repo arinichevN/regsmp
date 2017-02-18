@@ -6,7 +6,7 @@ Peer *getPeerById(char *id, const PeerList *list) {
     LIST_GET_BY_IDSTR
 }
 
-Sensor * getSensorById(int id, const SensorList *list) {
+SensorFTS * getSensorById(int id, const SensorFTSList *list) {
     LIST_GET_BY_ID
 }
 
@@ -16,33 +16,6 @@ Prog * getProgById(int id, const ProgList *list) {
 
 EM * getEMById(int id, const EMList *list) {
     LIST_GET_BY_ID
-}
-
-void saveProg(Prog *item) {
-    if (item->goal != item->sv.goal || item->pid.mode != item->sv.mode || item->pid.kp != item->sv.kp || item->pid.ki != item->sv.ki || item->pid.kd != item->sv.kd) {
-        PGresult *r;
-        char q[LINE_SIZE];
-        char mode[NAME_SIZE];
-        switch (item->pid.mode) {
-            case PID_MODE_HEATER:
-                strcpy(mode, MODE_STR_HEATER);
-                break;
-            case PID_MODE_COOLER:
-                strcpy(mode, MODE_STR_COOLER);
-                break;
-            default:
-                strcpy(mode, UNKNOWN_STR);
-        }
-        snprintf(q, sizeof q, "update %s.prog set goal=%f, mode='%s', kp=%f, ki=%f, kd=%f where app_class='%s' and id=%d", APP_NAME, item->goal, mode, item->pid.kp, item->pid.ki, item->pid.kd, app_class, item->id);
-        if ((r = dbGetDataC(*db_connp_data, q, "backupDelProgById: delete from backup: ")) != NULL) {
-            item->sv.goal = item->goal;
-            item->sv.mode = item->pid.mode;
-            item->sv.kp = item->pid.kp;
-            item->sv.ki = item->pid.ki;
-            item->sv.kd = item->pid.kd;
-            PQclear(r);
-        }
-    }
 }
 
 int lockProgList() {
@@ -102,34 +75,451 @@ int unlockProg(Prog *item) {
     return 1;
 }
 
-int bufCatProg(const Prog *item, char *buf, size_t buf_size) {
+void saveProgActive(Prog *item, int active) {
+    PGresult *r;
     char q[LINE_SIZE];
-    char mode[NAME_SIZE];
-    char state[NAME_SIZE];
-    switch (item->pid.mode) {
+    snprintf(q, sizeof q, "update " APP_NAME_STR ".prog set active=%d where id=%d", active, item->id);
+    if ((r = dbGetDataC(db_conn_data, q, q)) != NULL) {
+        PQclear(r);
+    }
+}
+
+int checkSensor(const SensorFTS *item) {
+    if (item->source == NULL) {
+        fprintf(stderr, "checkSensor: no data source where id = %d\n", item->id);
+        return 0;
+    }
+    return 1;
+}
+
+int checkEM(const EMList *list) {
+    size_t i, j;
+    for (i = 0; i < list->length; i++) {
+        if (list->item[i].source == NULL) {
+            fprintf(stderr, "checkEm: no data source where id = %d\n", list->item[i].id);
+            return 0;
+        }
+    }
+    //unique id
+    for (i = 0; i < list->length; i++) {
+        for (j = i + 1; j < list->length; j++) {
+            if (list->item[i].id == list->item[j].id) {
+                fprintf(stderr, "checkEm: id is not unique where id = %d\n", list->item[i].id);
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+int checkProg(const Prog *item, const ProgList *list) {
+    if (item->sensor.source == NULL) {
+        fprintf(stderr, "checkProg: no sensor attached to prog with id = %d\n", item->id);
+        return 0;
+    }
+    /*
+        if (item->em_c == NULL) {
+            fprintf(stderr, "checkProg: no cooler EM attached to prog with id = %d\n", item->id);
+            return 0;
+        }
+        if (item->em_h == NULL) {
+            fprintf(stderr, "checkProg: no heater EM attached to prog with id = %d\n", item->id);
+            return 0;
+        }
+     */
+    switch (item->pid_h.mode) {
         case PID_MODE_HEATER:
-            strcpy(mode, MODE_STR_HEATER);
-            break;
         case PID_MODE_COOLER:
-            strcpy(mode, MODE_STR_COOLER);
             break;
         default:
-            strcpy(mode, UNKNOWN_STR);
+            fprintf(stderr, "checkProg: bad mode for prog with id = %d\n", item->id);
+            return 0;
     }
-    switch (item->state) {
+    switch (item->pid_c.mode) {
+        case PID_MODE_HEATER:
+        case PID_MODE_COOLER:
+            break;
+        default:
+            fprintf(stderr, "checkProg: bad mode for prog with id = %d\n", item->id);
+            return 0;
+    }
+    if (item->delta < 0) {
+        fprintf(stderr, "checkProg: bad delta (delta>=0 expected) where prog_id = %d\n", item->id);
+        return 0;
+    }
+    //unique id
+    if (getProgById(item->id, list) != NULL) {
+        fprintf(stderr, "checkProg: prog with id = %d is already running\n", item->id);
+        return 0;
+    }
+    return 1;
+}
+
+int getEMByIdFdb(EM *item, int id, const PeerList *pl) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "select peer_id, remote_id, pwm_rsl from " APP_NAME_STR ".em_mapping where app_class='%s' and em_id=%d", app_class, id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    if (PQntuples(r) != 1) {
+#ifdef MODE_DEBUG
+        fputs("getEMByIdFdb: only one tuple expected\n", stderr);
+#endif
+        PQclear(r);
+        return 0;
+    }
+    if (!initMutex(&item->mutex)) {
+        PQclear(r);
+        return 0;
+    }
+    item->id = id;
+    item->source = getPeerById(PQgetvalue(r, 0, 0), &peer_list);
+    item->remote_id = atoi(PQgetvalue(r, 0, 1));
+    item->pwm_rsl = atof(PQgetvalue(r, 0, 2));
+    item->last_output = 0.0f;
+
+    PQclear(r);
+    return 1;
+}
+
+int getPIDByIdFdb(PID *item, int id) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "select kp, ki, kd from " APP_NAME_STR ".pid where id=%d", id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    if (PQntuples(r) != 1) {
+#ifdef MODE_DEBUG
+        fputs("getPIDByIdFdb: only one tuple expected\n", stderr);
+#endif
+        PQclear(r);
+        return 0;
+    }
+    item->kp = atof(PQgetvalue(r, 0, 0));
+    item->ki = atof(PQgetvalue(r, 0, 1));
+    item->kd = atof(PQgetvalue(r, 0, 2));
+    PQclear(r);
+    return 1;
+}
+
+int getDeltaByIdFdb(float *item, int id) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "select delta from " APP_NAME_STR ".onf where id=%d", id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    if (PQntuples(r) != 1) {
+#ifdef MODE_DEBUG
+        fputs("getDeltaByIdFdb: only one tuple expected\n", stderr);
+#endif
+        PQclear(r);
+        return 0;
+    }
+    *item = atof(PQgetvalue(r, 0, 0));
+    PQclear(r);
+    return 1;
+}
+
+int getGapByIdFdb(struct timespec *item, int id) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "select extract(epoch from amount) amount from " APP_NAME_STR ".gap where id=%d", id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    if (PQntuples(r) != 1) {
+#ifdef MODE_DEBUG
+        fputs("getGapByIdFdb: only one tuple expected\n", stderr);
+#endif
+        PQclear(r);
+        return 0;
+    }
+    item->tv_sec = (int) atof(PQgetvalue(r, 0, 0));
+    item->tv_nsec = 0;
+    PQclear(r);
+    return 1;
+}
+
+int getSensorByIdFdb(SensorFTS *item, int sensor_id, const PeerList *pl) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    size_t i;
+    snprintf(q, sizeof q, "select peer_id, remote_id from " APP_NAME_STR ".sensor_mapping where app_class='%s' and sensor_id=%d", app_class, sensor_id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    if (PQntuples(r) != 1) {
+        PQclear(r);
+        return 0;
+    }
+    if (!initMutex(&item->mutex)) {
+        PQclear(r);
+        return 0;
+    }
+    item->id = sensor_id;
+    item->source = getPeerById(PQgetvalue(r, 0, 0), pl);
+    item->remote_id = atoi(PQgetvalue(r, 0, 1));
+    memset(&item->value, 0, sizeof item->value);
+
+    PQclear(r);
+    if (!checkSensor(item)) {
+        return 0;
+    }
+    return 1;
+}
+
+Prog *getProgFromDbr(PGresult *r, int ind, const PeerList *pl) {
+    Prog *item = (Prog *) malloc(sizeof *(item));
+    if (item == NULL) {
+#ifdef MODE_DEBUG
+        fputs("getProgByIdFdb: failed to allocate memory\n", stderr);
+#endif
+        return NULL;
+    }
+    memset(item, 0, sizeof *item);
+    item->id = atoi(PQgetvalue(r, ind, 0));
+    if (!getSensorByIdFdb(&item->sensor, atoi(PQgetvalue(r, ind, 1)), pl)) {
+        free(item);
+        return NULL;
+    }
+    if (!getEMByIdFdb(&item->em_h, atoi(PQgetvalue(r, ind, 2)), pl)) {
+        free(item);
+        return NULL;
+    }
+    if (!getEMByIdFdb(&item->em_c, atoi(PQgetvalue(r, ind, 3)), pl)) {
+        free(item);
+        return NULL;
+    }
+    item->goal = atof(PQgetvalue(r, ind, 4));
+    char *mode = PQgetvalue(r, ind, 5);
+    if (strncmp(mode, MODE_PID_STR, MODE_SIZE) == 0) {
+        item->mode = CNT_PID;
+    } else if (strncmp(mode, MODE_ONF_STR, MODE_SIZE) == 0) {
+        item->mode = CNT_ONF;
+    } else {
+#ifdef MODE_DEBUG
+        fputs("getProgByIdFdb: bad mode\n", stderr);
+#endif
+        free(item);
+        return NULL;
+    }
+    if (!getPIDByIdFdb(&item->pid_h, atoi(PQgetvalue(r, ind, 6)))) {
+        free(item);
+        return NULL;
+    }
+    item->pid_h.min_output = 0.0f;
+    item->pid_h.mode = PID_MODE_HEATER;
+    if (!getPIDByIdFdb(&item->pid_c, atoi(PQgetvalue(r, ind, 7)))) {
+        free(item);
+        return NULL;
+    }
+    item->pid_c.min_output = 0.0f;
+    item->pid_c.mode = PID_MODE_COOLER;
+    if (!getDeltaByIdFdb(&item->delta, atoi(PQgetvalue(r, ind, 8)))) {
+        free(item);
+        return NULL;
+    }
+    int active = atoi(PQgetvalue(r, ind, 9));
+    if (!getGapByIdFdb(&item->change_gap, atoi(PQgetvalue(r, ind, 10)))) {
+        free(item);
+        return NULL;
+    }
+    if (!active) {
+        saveProgActive(item, 1);
+    }
+    item->state = INIT;
+    item->output = 0.0f;
+    item->state_r = OFF;
+    item->next = NULL;
+    return item;
+}
+
+Prog * getProgByIdFdb(int id, PeerList *pl) {
+    PGresult *r;
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "select " PROG_FIELDS " from " APP_NAME_STR ".prog where id=%d", id);
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return NULL;
+    }
+    if (PQntuples(r) != 1) {
+#ifdef MODE_DEBUG
+        fputs("getProgByIdFdb: only one tuple expected\n", stderr);
+#endif
+        PQclear(r);
+        return NULL;
+    }
+
+    Prog *item = getProgFromDbr(r, 0, pl);
+    PQclear(r);
+    if (item == NULL) {
+        return NULL;
+    }
+    if (!initMutex(&item->mutex)) {
+        free(item);
+        return NULL;
+    }
+    if (!checkProg(item, &prog_list)) {
+        free(item);
+        return NULL;
+    }
+    return item;
+}
+
+int loadActiveProg(ProgList *list, PeerList *pl) {
+    PGresult *r;
+    char *q = "select " PROG_FIELDS " from " APP_NAME_STR ".prog where active=1";
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return 0;
+    }
+    int n = PQntuples(r);
+    int i;
+    for (i = 0; i < n; i++) {
+        Prog *item = getProgFromDbr(r, i, pl);
+        if (item == NULL) {
+            continue;
+        }
+        if (!initMutex(&item->mutex)) {
+            free(item);
+            continue;
+        }
+        if (!checkProg(item, list)) {
+            free(item);
+            continue;
+        }
+        if (!addProg(item, list)) {
+            free(item);
+            continue;
+        }
+    }
+    PQclear(r);
+    return 1;
+}
+
+void loadAllProg(ProgList *list, PeerList *pl) {
+    PGresult *r;
+    char *q = "select " PROG_FIELDS " from " APP_NAME_STR ".prog";
+    if ((r = dbGetDataT(db_conn_data, q, q)) == NULL) {
+        return;
+    }
+    int n = PQntuples(r);
+    int i;
+    for (i = 0; i < n; i++) {
+        Prog *item = getProgFromDbr(r, i, pl);
+        if (item == NULL) {
+            continue;
+        }
+        if (!initMutex(&item->mutex)) {
+            free(item);
+            continue;
+        }
+        if (!checkProg(item, list)) {
+            free(item);
+            continue;
+        }
+        if (!addProg(item, list)) {
+            free(item);
+            continue;
+        }
+    }
+    PQclear(r);
+
+}
+
+struct timespec getTimeRestChange(const Prog *item) {
+    struct timespec out = {-1, -1};
+    int value_is_out = 0;
+    switch (item->state_r) {
+        case HEATER:
+            if (VAL_IS_OUT_H) {
+                value_is_out = 1;
+            }
+            break;
+        case COOLER:
+            if (VAL_IS_OUT_C) {
+                value_is_out = 1;
+            }
+            break;
+    }
+    if (value_is_out) {
+        out = getTimeRest_ts(item->change_gap, item->tmr.start);
+    }
+    return out;
+}
+
+char * getStateStr(char state) {
+    switch (state) {
+        case OFF:
+            return "OFF";
+            break;
         case INIT:
-            strcpy(state, STATE_STR_INIT);
+            return "INIT";
             break;
         case REG:
-            strcpy(state, STATE_STR_REG);
+            return "REG";
             break;
-        case TUNE:
-            strcpy(state, STATE_STR_TUNE);
+        case NOREG:
+            return "NOREG";
             break;
-        default:
-            strcpy(state, UNKNOWN_STR);
+        case COOLER:
+            return "COOLER";
+            break;
+        case HEATER:
+            return "HEATER";
+            break;
+        case CNT_PID:
+            return "PID";
+            break;
+        case CNT_ONF:
+            return "ONF";
+            break;
     }
-    snprintf(q, sizeof q, "%d_%f_%s_%s_%f_%f_%f\n", item->id, item->goal, mode, state, item->pid.kp, item->pid.ki, item->pid.kd);
+    return "\0";
+}
+
+int bufCatProgRuntime(const Prog *item, char *buf, size_t buf_size) {
+    char q[LINE_SIZE];
+    char *state = getStateStr(item->state);
+    char *state_r = getStateStr(item->state_r);
+    struct timespec tm_rest = getTimeRestChange(item);
+    snprintf(q, sizeof q, "%d_%s_%s_%f_%f_%ld_%f_%d\n",
+            item->id,
+            state,
+            state_r,
+            item->output_heater,
+            item->output_cooler,
+            tm_rest.tv_sec,
+            item->sensor.value.value,
+            item->sensor.value.state
+            );
+    if (bufCat(buf, q, buf_size) == NULL) {
+        return 0;
+    }
+    return 1;
+}
+
+int bufCatProgInit(const Prog *item, char *buf, size_t buf_size) {
+    char q[LINE_SIZE];
+    char *mode = getStateStr(item->mode);
+    struct timespec tm_rest = getTimeRestChange(item);
+    snprintf(q, sizeof q, "%d_%f_%s_%f_%f_%f_%f_%f_%f_%f_%ld\n",
+            item->id,
+            item->goal,
+            mode,
+            item->delta,
+
+            item->pid_h.kp,
+            item->pid_h.ki,
+            item->pid_h.kd,
+
+            item->pid_c.kp,
+            item->pid_c.ki,
+            item->pid_c.kd,
+
+            item->change_gap.tv_sec
+            );
     if (bufCat(buf, q, buf_size) == NULL) {
         return 0;
     }
@@ -156,85 +546,132 @@ void sendFooter(int8_t crc) {
     acp_sendFooter(crc, &peer_client);
 }
 
-void printAll(ProgList *list, PeerList *pl, EMList *el, SensorList *sl) {
+void waitThread_ctl(char cmd) {
+    thread_cmd = cmd;
+    pthread_join(thread, NULL);
+}
+
+void printAll(ProgList *list, PeerList *pl) {
     char q[LINE_SIZE];
     uint8_t crc = 0;
     size_t i;
-    sendStr("+----------------------------------------------------------------------------------------------------------------------+\n", &crc);
-    sendStr("|                                                    Program                                                           |\n", &crc);
-    sendStr("+-----------+------+-----------+--------------------+------+-----------------------------------------------------------+\n", &crc);
-    sendStr("|           |      |           |                    |      |                            PID                            |\n", &crc);
-    sendStr("|           |      |           |                    |      |-----------+-----------+-----------+-----------+-----------+\n", &crc);
-    sendStr("|    id     | mode |    goal   |        output      | state|    kp     |    ki     |    kd     |  ierr     |  preverr  |\n", &crc);
-    sendStr("+-----------+------+-----------+--------------------+------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    snprintf(q, sizeof q, "prog_list length: %ld\n", list->length);
+    sendStr(q, &crc);
+    sendStr("+------------------------------------------------------------------------------------------------------+\n", &crc);
+    sendStr("|                                                  Program                                             |\n", &crc);
+    sendStr("+-----------+------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    sendStr("|    id     | mode |    goal   |   delta   | change_gap|   state   | state_r   | out_heater| out_cooler|\n", &crc);
+    sendStr("+-----------+------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    PROG_LIST_LOOP_DF
     PROG_LIST_LOOP_ST
-    snprintf(q, sizeof q, "|%11d|%6c|%11.1f|%20.1f|%6hhd|%11.1f|%11.1f|%11.1f|%11.1f|%11.1f|\n",
+            char *mode = getStateStr(curr->mode);
+    char *state = getStateStr(curr->state);
+    char *state_r = getStateStr(curr->state_r);
+    snprintf(q, sizeof q, "|%11d|%6s|%11.3f|%11.3f|%11ld|%11s|%11s|%11.3f|%11.3f|\n",
             curr->id,
-            curr->pid.mode,
+            mode,
             curr->goal,
-            curr->output,
-            curr->state,
-            curr->pid.kp,
-            curr->pid.ki,
-            curr->pid.kd,
-            curr->pid.integral_error,
-            curr->pid.previous_error
+            curr->delta,
+            curr->change_gap.tv_sec,
+            state,
+            state_r,
+            curr->output_heater,
+            curr->output_cooler
             );
     sendStr(q, &crc);
     PROG_LIST_LOOP_SP
-    sendStr("+-----------+------+-----------+--------------------+------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    sendStr("+-----------+------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
 
-    sendStr("+-------------------------------------------------------------------------+\n", &crc);
-    sendStr("|                                  Peer                                   |\n", &crc);
-    sendStr("+--------------------------------+-----------+----------------+-----------+\n", &crc);
-    sendStr("|               id               |  udp_port |      addr      |     fd    |\n", &crc);
-    sendStr("+--------------------------------+-----------+----------------+-----------+\n", &crc);
+    sendStr("+-----------+------------------------------------------------------------------+------------------------------------------------------------------+\n", &crc);
+    sendStr("|   Prog    |                             PID heater                           |                             PID cooler                           |\n", &crc);
+    sendStr("|-----------+------+-----------+-----------+-----------+-----------+-----------+------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    sendStr("|    id     | mode |    kp     |    ki     |    kd     |  ierr     |  preverr  | mode |    kp     |    ki     |    kd     |  ierr     |  preverr  |\n", &crc);
+    sendStr("+-----------+------+-----------+-----------+-----------+-----------+-----------+------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    PROG_LIST_LOOP_ST
+    snprintf(q, sizeof q, "|%11d|%6c|%11.3f|%11.3f|%11.3f|%11.1f|%11.1f|%6c|%11.3f|%11.3f|%11.3f|%11.1f|%11.1f|\n",
+            curr->id,
+
+            curr->pid_h.mode,
+            curr->pid_h.kp,
+            curr->pid_h.ki,
+            curr->pid_h.kd,
+            curr->pid_h.integral_error,
+            curr->pid_h.previous_error,
+
+            curr->pid_c.mode,
+            curr->pid_c.kp,
+            curr->pid_c.ki,
+            curr->pid_c.kd,
+            curr->pid_c.integral_error,
+            curr->pid_c.previous_error
+            );
+    sendStr(q, &crc);
+    PROG_LIST_LOOP_SP
+    sendStr("+-----------+------+-----------+-----------+-----------+-----------+-----------+------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+
+    sendStr("+-------------------------------------------------------------------------------------+\n", &crc);
+    sendStr("|                                       Peer                                          |\n", &crc);
+    sendStr("+--------------------------------+-----------+-----------+----------------+-----------+\n", &crc);
+    sendStr("|               id               |   link    |  udp_port |      addr      |     fd    |\n", &crc);
+    sendStr("+--------------------------------+-----------+-----------+----------------+-----------+\n", &crc);
     for (i = 0; i < pl->length; i++) {
-        snprintf(q, sizeof q, "|%32s|%11u|%16u|%11d|\n",
+        snprintf(q, sizeof q, "|%32s|%11p|%11u|%16u|%11d|\n",
                 pl->item[i].id,
+                &pl->item[i],
                 pl->item[i].addr.sin_port,
                 pl->item[i].addr.sin_addr.s_addr,
                 *pl->item[i].fd
                 );
         sendStr(q, &crc);
     }
-    sendStr("+--------------------------------+-----------+----------------+-----------+\n", &crc);
+    sendStr("+--------------------------------+-----------+-----------+----------------+-----------+\n", &crc);
 
-    sendStr("+--------------------------------------------------------+\n", &crc);
-    sendStr("|                          EM                            |\n", &crc);
-    sendStr("+-----------+-----------+--------------------------------+\n", &crc);
-    sendStr("|     id    | remote_id |             peer_id            |\n", &crc);
-    sendStr("+-----------+-----------+--------------------------------+\n", &crc);
-    for (i = 0; i < el->length; i++) {
-        snprintf(q, sizeof q, "|%11d|%11d|%32s|\n",
-                el->item[i].id,
-                el->item[i].remote_id,
-                el->item[i].source->id
-                );
-        sendStr(q, &crc);
-    }
-    sendStr("+-----------+-----------+--------------------------------+\n", &crc);
+    sendStr("+-----------------------------------------------------------------------------------------------------------+\n", &crc);
+    sendStr("|                                                    Prog EM                                                |\n", &crc);
+    sendStr("+-----------+-----------------------------------------------+-----------------------------------------------+\n", &crc);
+    sendStr("|           |                   EM heater                   |                  EM cooler                    |\n", &crc);
+    sendStr("+           +-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    sendStr("|  prog_id  |     id    | remote_id |  pwm_rsl  | peer_link |     id    | remote_id |  pwm_rsl  | peer_link |\n", &crc);
+    sendStr("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+    PROG_LIST_LOOP_ST
+    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11f|%11p|%11d|%11d|%11f|%11p|\n",
+            curr->id,
 
-    sendStr("+---------------------------------------------------------------------------------------------------+\n", &crc);
-    sendStr("|                                                     Sensor                                        |\n", &crc);
-    sendStr("+-----------+-----------+--------------------------------+------------------------------------------+\n", &crc);
-    sendStr("|           |           |                                |                   value                  |\n", &crc);
-    sendStr("|           |           |                                |-----------+-----------+-----------+------+\n", &crc);
-    sendStr("|     id    | remote_id |             peer_id            |   temp    |   sec     |   nsec    | state|\n", &crc);
-    sendStr("+-----------+-----------+--------------------------------+-----------+-----------+-----------+------+\n", &crc);
-    for (i = 0; i < sl->length; i++) {
-        snprintf(q, sizeof q, "|%11d|%11d|%32s|%11f|%11ld|%11ld|%6d|\n",
-                sl->item[i].id,
-                sl->item[i].remote_id,
-                sl->item[i].source->id,
-                sl->item[i].value.value,
-                sl->item[i].value.tm.tv_sec,
-                sl->item[i].value.tm.tv_nsec,
-                sl->item[i].value.state
-                );
-        sendStr(q, &crc);
-    }
-    sendStr("+-----------+-----------+--------------------------------+-----------+-----------+-----------+------+\n", &crc);
+            curr->em_c.id,
+            curr->em_c.remote_id,
+            curr->em_c.pwm_rsl,
+            curr->em_c.source,
+
+            curr->em_h.id,
+            curr->em_h.remote_id,
+            curr->em_h.pwm_rsl,
+            curr->em_h.source
+            );
+    sendStr(q, &crc);
+    PROG_LIST_LOOP_SP
+    sendStr("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n", &crc);
+
+    sendStr("+------------------------------------------------------------------------------------------+\n", &crc);
+    sendStr("|    Prog   |                                   Sensor                                     |\n", &crc);
+    sendStr("+-----------+-----------+-----------+-----------+------------------------------------------+\n", &crc);
+    sendStr("|           |           |           |           |                   value                  |\n", &crc);
+    sendStr("|           |           |           |           |-----------+-----------+-----------+------+\n", &crc);
+    sendStr("|    id     |    id     | remote_id | peer_link |   temp    |    sec    |   nsec    | state|\n", &crc);
+    sendStr("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n", &crc);
+    PROG_LIST_LOOP_ST
+    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11p|%11f|%11ld|%11ld|%6d|\n",
+            curr->id,
+            curr->sensor.id,
+            curr->sensor.remote_id,
+            curr->sensor.source,
+            curr->sensor.value.value,
+            curr->sensor.value.tm.tv_sec,
+            curr->sensor.value.tm.tv_nsec,
+            curr->sensor.value.state
+            );
+    sendStr(q, &crc);
+    PROG_LIST_LOOP_SP
+    sendStr("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n", &crc);
     sendFooter(crc);
 }
 
@@ -260,9 +697,17 @@ void printHelp() {
     sendStr(q, &crc);
     snprintf(q, sizeof q, "%c\tunload program from RAM; program id expected if '.' quantifier is used\n", ACP_CMD_STOP);
     sendStr(q, &crc);
-    snprintf(q, sizeof q, "%c\tget prog data in format: progId_goal_mode_state_Kp_Ki_Kd; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_GET_DATA);
+    snprintf(q, sizeof q, "%c\tunload program from RAM, after that load it; program id expected if '.' quantifier is used\n", ACP_CMD_RESET);
     sendStr(q, &crc);
-    snprintf(q, sizeof q, "%c\tset program state; state expected: 'r' - PID regulator, 't' - PID autotune; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_SET_STATE);
+    snprintf(q, sizeof q, "%c\tswitch prog state between REG and NOREG; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_SWITCH_STATE);
+    sendStr(q, &crc);
+    snprintf(q, sizeof q, "%c\tset heater power; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_SET_HEATER_POWER);
+    sendStr(q, &crc);
+    snprintf(q, sizeof q, "%c\tset cooler power; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_SET_COOLER_POWER);
+    sendStr(q, &crc);
+    snprintf(q, sizeof q, "%c\tget prog runtime data in format:  progId_state_stateEM_output_timeRestSecToEMSwap; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_GET_DATA_RUNTIME);
+    sendStr(q, &crc);
+    snprintf(q, sizeof q, "%c\tget prog initial data in format;  progId_setPoint_mode_ONFdelta_PIDheaterKp_PIDheaterKi_PIDheaterKd_PIDcoolerKp_PIDcoolerKi_PIDcoolerKd; program id expected if '.' quantifier is used\n", ACP_CMD_REGSMP_PROG_GET_DATA_INIT);
     sendStr(q, &crc);
     sendFooter(crc);
 }

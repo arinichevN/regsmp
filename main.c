@@ -2,20 +2,19 @@
  * regsmp
  */
 
-
 #include "main.h"
 
 char pid_path[LINE_SIZE];
 char app_class[NAME_SIZE];
+
 char db_conninfo_settings[LINE_SIZE];
+char db_conninfo_data[LINE_SIZE];
+char db_conninfo_public[LINE_SIZE];
 
 int app_state = APP_INIT;
-PGconn *db_conn_settings = NULL;
-PGconn *db_conn_public = NULL;
-PGconn **db_connp_public = NULL;
+
 
 PGconn *db_conn_data = NULL;
-PGconn **db_connp_data = NULL; //pointer to db_conn_settings or to db_conn_data
 
 int pid_file = -1;
 int proc_id;
@@ -25,22 +24,14 @@ int udp_fd = -1;
 int udp_fd_tf = -1;
 Peer peer_client = {.fd = &udp_fd, .addr_size = sizeof peer_client.addr};
 struct timespec cycle_duration = {0, 0};
-int data_initialized = 0;
-ThreadData thread_data = {.cmd = ACP_CMD_APP_NO, .on = 0, .created = 0, .attr_initialized = 0,
-    .i1l =
-    {NULL, 0},
-    .f1l =
-    {NULL, 0},
-    .i1f1l =
-    {NULL, 0},
-    .s1l =
-    {NULL, 0},
-    .i1s1l =
-    {NULL, 0}};
+pthread_t thread;
+char thread_cmd;
 Mutex progl_mutex = {.created = 0, .attr_initialized = 0};
+Peer *peer_lock = NULL;
+I1List i1l = {NULL, 0};
+I1F1List i1f1l = {NULL, 0};
+F1List f1l = {NULL, 0};
 PeerList peer_list = {NULL, 0};
-EMList em_list = {NULL, 0};
-SensorList sensor_list = {NULL, 0};
 ProgList prog_list = {NULL, NULL, 0};
 
 #include "util.c"
@@ -48,84 +39,66 @@ ProgList prog_list = {NULL, NULL, 0};
 int readSettings() {
     PGresult *r;
     char q[LINE_SIZE];
-    char db_conninfo_data[LINE_SIZE];
-    char db_conninfo_public[LINE_SIZE];
+    PGconn *db_conn_settings = NULL;
     memset(pid_path, 0, sizeof pid_path);
     memset(db_conninfo_data, 0, sizeof db_conninfo_data);
+
     if (!initDB(&db_conn_settings, db_conninfo_settings)) {
         return 0;
     }
-    snprintf(q, sizeof q, "select db_public from %s.config where app_class='%s'", APP_NAME, app_class);
+    snprintf(q, sizeof q, "select db_public, udp_port, udp_buf_size, pid_path, db_data, cycle_duration_us, peer_lock from " APP_NAME_STR ".config where app_class='%s'", app_class);
     if ((r = dbGetDataT(db_conn_settings, q, q)) == NULL) {
+        freeDB(db_conn_settings);
         return 0;
     }
     if (PQntuples(r) != 1) {
         PQclear(r);
-        fputs("readSettings: need only one tuple (1)\n", stderr);
+        freeDB(db_conn_settings);
+        fputs("readSettings: ERROR: need only one tuple\n", stderr);
         return 0;
     }
-
-
-    memcpy(db_conninfo_public, PQgetvalue(r, 0, 0), LINE_SIZE);
-    PQclear(r);
+    char db_conninfo_public[LINE_SIZE];
+    PGconn *db_conn_public = NULL;
+    memset(db_conninfo_public, 0, sizeof db_conninfo_public);
+    memcpy(db_conninfo_public, PQgetvalue(r, 0, 0), sizeof db_conninfo_public);
     if (dbConninfoEq(db_conninfo_public, db_conninfo_settings)) {
-        db_connp_public = &db_conn_settings;
+        db_conn_public = db_conn_settings;
     } else {
         if (!initDB(&db_conn_public, db_conninfo_public)) {
-            return 0;
-        }
-        db_connp_public = &db_conn_public;
-    }
-
-    udp_buf_size = 0;
-    udp_port = -1;
-    snprintf(q, sizeof q, "select udp_port, udp_buf_size, pid_path, db_data, cycle_duration_us from %s.config where app_class='%s'", APP_NAME, app_class);
-    if ((r = dbGetDataT(db_conn_settings, q, q)) == NULL) {
-        return 0;
-    }
-    if (PQntuples(r) == 1) {
-        int done = 1;
-        done = done && config_getUDPPort(*db_connp_public, PQgetvalue(r, 0, 0), &udp_port);
-        done = done && config_getBufSize(*db_connp_public, PQgetvalue(r, 0, 1), &udp_buf_size);
-        done = done && config_getPidPath(*db_connp_public, PQgetvalue(r, 0, 2), pid_path, LINE_SIZE);
-        done = done && config_getDbConninfo(*db_connp_public, PQgetvalue(r, 0, 3), db_conninfo_data, LINE_SIZE);
-        done = done && config_getCycleDurationUs(*db_connp_public, PQgetvalue(r, 0, 4), &cycle_duration);
-        if (!done) {
             PQclear(r);
-            freeDB(&db_conn_public);
-            fputs("readSettings: failed to read some fields\n", stderr);
+            freeDB(db_conn_settings);
             return 0;
         }
-    } else {
-        PQclear(r);
-        freeDB(&db_conn_public);
-        fputs("readSettings: one tuple expected\n", stderr);
-        return 0;
+    }
+    int done = 1;
+    done = done && config_getUDPPort(db_conn_public, PQgetvalue(r, 0, 1), &udp_port);
+    done = done && config_getBufSize(db_conn_public, PQgetvalue(r, 0, 2), &udp_buf_size);
+    done = done && config_getPidPath(db_conn_public, PQgetvalue(r, 0, 3), pid_path, LINE_SIZE);
+    done = done && config_getDbConninfo(db_conn_public, PQgetvalue(r, 0, 4), db_conninfo_data, LINE_SIZE);
+    done = done && config_getCycleDurationUs(db_conn_public, PQgetvalue(r, 0, 5), &cycle_duration);
+    done = done && config_getPeerList(db_conn_public, &peer_list, &udp_fd_tf);
+    peer_lock = getPeerById(PQgetvalue(r, 0, 6), &peer_list);
+    if (peer_lock == NULL) {
+        done = done && 0;
     }
     PQclear(r);
-
-
-    if (dbConninfoEq(db_conninfo_data, db_conninfo_settings)) {
-        db_connp_data = &db_conn_settings;
-    } else if (dbConninfoEq(db_conninfo_data, db_conninfo_public)) {
-        db_connp_data = &db_conn_public;
-    } else {
-        if (!initDB(&db_conn_data, db_conninfo_data)) {
-            return 0;
-        }
-        db_connp_data = &db_conn_data;
-    }
-    if (!(dbConninfoEq(db_conninfo_data, db_conninfo_settings) || dbConninfoEq(db_conninfo_public, db_conninfo_settings))) {
-        freeDB(&db_conn_settings);
+    freeDB(db_conn_public);
+    freeDB(db_conn_settings);
+    if (!done) {
+        fputs("readSettings: ERROR: failed to read some fields\n", stderr);
+        return 0;
     }
     return 1;
 }
 
 void initApp() {
-    if (!readConf(CONF_FILE, db_conninfo_settings, app_class)) {
+    if (!readConf(CONFIG_FILE_DB, db_conninfo_settings, app_class)) {
         exit_nicely_e("initApp: failed to read configuration file\n");
     }
-
+#ifdef MODE_DEBUG
+    printf("initApp: db_conninfo_settings: %s\n", db_conninfo_settings);
+    printf("initApp: app_class: %s\n", app_class);
+#endif
     if (!readSettings()) {
         exit_nicely_e("initApp: failed to read settings\n");
     }
@@ -133,9 +106,16 @@ void initApp() {
     if (!initPid(&pid_file, &proc_id, pid_path)) {
         exit_nicely_e("initApp: failed to initialize pid\n");
     }
-
+#ifdef MODE_DEBUG
+    printf("initApp: PID: %d\n", proc_id);
+    printf("initApp: udp_port: %d\n", udp_port);
+    printf("initApp: udp_buf_size: %d\n", udp_buf_size);
+    printf("initApp: pid_path: %s\n", pid_path);
+    printf("initApp: db_conninfo_data: %s\n", db_conninfo_data);
+    printf("initApp: cycle_duration: %ld(sec) %ld(nsec)\n", cycle_duration.tv_sec, cycle_duration.tv_nsec);
+#endif
     if (!initMutex(&progl_mutex)) {
-        exit_nicely_e("initApp: failed to initialize mutex\n");
+        exit_nicely_e("initApp: failed to initialize prog mutex\n");
     }
 
     if (!initUDPServer(&udp_fd, udp_port)) {
@@ -145,178 +125,99 @@ void initApp() {
     if (!initUDPClient(&udp_fd_tf, WAIT_RESP_TIMEOUT)) {
         exit_nicely_e("initApp: failed to initialize udp client\n");
     }
+    char cmd_unlock[1] = {ACP_CMD_LCK_UNLOCK};
+    char cmd_check[1] = {ACP_CMD_LCK_GET_DATA};
+    acp_waitUnlock(peer_lock, cmd_unlock, cmd_check, LOCK_COM_INTERVAL, udp_buf_size);
 }
 
-void initData() {
-    data_initialized = 0;
-    char q[LINE_SIZE];
-    snprintf(q, sizeof q, "select peer_id from %s.em_mapping where app_class='%s' union distinct select peer_id from %s.sensor_mapping where app_class='%s'", APP_NAME, app_class, APP_NAME, app_class);
-    if (!config_getPeerList(*db_connp_data, *db_connp_public, q, &peer_list, &udp_fd_tf)) {
-        freePeer(&peer_list);
-        freeDB(&db_conn_data);
-        freeDB(&db_conn_public);
-        return;
+int initData() {
+    if (!initDB(&db_conn_data, db_conninfo_data)) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to initialize data db connection\n", stderr);
+#endif
+        return 0;
     }
-    if (!initSensor(&sensor_list, &peer_list)) {
-        FREE_LIST(&sensor_list);
-        freePeer(&peer_list);
-        freeDB(&db_conn_data);
-        freeDB(&db_conn_public);
-        return;
-    }
-    if (!initEM(&em_list, &peer_list)) {
-        FREE_LIST(&em_list);
-        FREE_LIST(&sensor_list);
-        freePeer(&peer_list);
-        freeDB(&db_conn_data);
-        freeDB(&db_conn_public);
-        return;
-    }
-    if (!createThread(&thread_data, udp_buf_size)) {
+    if (!loadActiveProg(&prog_list, &peer_list)) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to load active programs\n", stderr);
+#endif
         freeProg(&prog_list);
-        FREE_LIST(&em_list);
-        FREE_LIST(&sensor_list);
-        freePeer(&peer_list);
-        freeDB(&db_conn_data);
-        freeDB(&db_conn_public);
-        return;
-    }
-    data_initialized = 1;
-}
-
-int initSensor(SensorList *list, const PeerList *pl) {
-    PGresult *r;
-    char q[LINE_SIZE];
-    size_t i;
-    list->length = 0;
-    list->item = NULL;
-    snprintf(q, sizeof q, "select sensor_id, remote_id, peer_id from %s.sensor_mapping where app_class='%s'", APP_NAME, app_class);
-    if ((r = dbGetDataT(*db_connp_data, q, "initSensor: select pin: ")) == NULL) {
+        freeDB(db_conn_data);
         return 0;
     }
-    list->length = PQntuples(r);
-    if (list->length > 0) {
-        list->item = (Sensor *) malloc(list->length * sizeof *(list->item));
-        if (list->item == NULL) {
-            list->length = 0;
-            fputs("initSensor: failed to allocate memory\n", stderr);
-            PQclear(r);
-            return 0;
-        }
-        for (i = 0; i < list->length; i++) {
-            list->item[i].id = atoi(PQgetvalue(r, i, 0));
-            list->item[i].remote_id = atoi(PQgetvalue(r, i, 1));
-            list->item[i].source = getPeerById(PQgetvalue(r, i, 2), pl);
-        }
+    i1l.item = (int *) malloc(udp_buf_size * sizeof *(i1l.item));
+    if (i1l.item == NULL) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to allocate memory for i1l\n", stderr);
+#endif
+        freeProg(&prog_list);
+        freeDB(db_conn_data);
+        return 0;
     }
-    PQclear(r);
-    if (!checkSensor(list)) {
+    i1f1l.item = (I1F1 *) malloc(udp_buf_size * sizeof *(i1f1l.item));
+    if (i1f1l.item == NULL) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to allocate memory for i1f1l\n", stderr);
+#endif
+        FREE_LIST(&i1l);
+        freeProg(&prog_list);
+        freeDB(db_conn_data);
+        return 0;
+    }
+    f1l.item = (float *) malloc(udp_buf_size * sizeof *(f1l.item));
+    if (f1l.item == NULL) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to allocate memory for f1l\n", stderr);
+#endif
+        FREE_LIST(&i1f1l);
+        FREE_LIST(&i1l);
+        freeProg(&prog_list);
+        freeDB(db_conn_data);
+        return 0;
+    }
+    if (!createThread_ctl()) {
+#ifdef MODE_DEBUG
+        fputs("initData: ERROR: failed to create thread\n", stderr);
+#endif
+        FREE_LIST(&f1l);
+        FREE_LIST(&i1f1l);
+        FREE_LIST(&i1l);
+        freeProg(&prog_list);
+        freeDB(db_conn_data);
         return 0;
     }
     return 1;
-}
-
-int initEM(EMList *list, const PeerList *pl) {
-    PGresult *r;
-    char q[LINE_SIZE];
-    size_t i;
-    list->length = 0;
-    list->item = NULL;
-    snprintf(q, sizeof q, "select em_id, remote_id, peer_id from %s.em_mapping where app_class='%s'", APP_NAME, app_class);
-    if ((r = dbGetDataT(*db_connp_data, q, "initEm: select pin: ")) == NULL) {
-        return 0;
-    }
-    list->length = PQntuples(r);
-    if (list->length > 0) {
-        list->item = (EM *) malloc(list->length * sizeof *(list->item));
-        if (list->item == NULL) {
-            list->length = 0;
-            fputs("initEm: failed to allocate memory\n", stderr);
-            PQclear(r);
-            return 0;
-        }
-        for (i = 0; i < list->length; i++) {
-            list->item[i].id = atoi(PQgetvalue(r, i, 0));
-            list->item[i].remote_id = atoi(PQgetvalue(r, i, 1));
-            list->item[i].source = getPeerById(PQgetvalue(r, i, 2), &peer_list);
-            list->item[i].last_output = 0.0f;
-        }
-    }
-    PQclear(r);
-    if (!checkEM(list)) {
-        return 0;
-    }
-    return 1;
-}
-
-Prog * getProgByIdFdb(int id, const SensorList *slist, EMList *elist) {
-    PGresult *r;
-    char q[LINE_SIZE];
-    snprintf(q, sizeof q, "select sensor_id, em_id, goal, mode, kp, ki, kd from %s.prog where app_class='%s' and id=%d", APP_NAME, app_class, id);
-    if ((r = dbGetDataT(*db_connp_data, q, "initProg: select pin: ")) == NULL) {
-        return 0;
-    }
-    if (PQntuples(r) != 1) {
-#ifdef MODE_DEBUG
-        fputs("getProgByIdFdb: only one tuple expected\n", stderr);
-#endif
-        PQclear(r);
-        return NULL;
-    }
-
-    Prog *item = (Prog *) malloc(sizeof *(item));
-    if (item == NULL) {
-#ifdef MODE_DEBUG
-        fputs("getProgByIdFdb: failed to allocate memory\n", stderr);
-#endif
-        PQclear(r);
-        return NULL;
-    }
-
-    item->sensor = getSensorById(atoi(PQgetvalue(r, 0, 0)), slist);
-    item->em = getEMById(atoi(PQgetvalue(r, 0, 1)), elist);
-    item->goal = atof(PQgetvalue(r, 0, 2));
-    memcpy(&item->pid.mode, PQgetvalue(r, 0, 3), sizeof item->pid.mode);
-    item->pid.kp = atof(PQgetvalue(r, 0, 4));
-    item->pid.ki = atof(PQgetvalue(r, 0, 5));
-    item->pid.kd = atof(PQgetvalue(r, 0, 6));
-    PQclear(r);
-
-    item->id = id;
-    item->state = INIT;
-    item->next = NULL;
-    if (!initMutex(&item->mutex)) {
-        free(item);
-        return NULL;
-    }
-    if (!checkProg(item, &prog_list)) {
-        free(item);
-        return NULL;
-    }
-    return item;
 }
 
 int addProg(Prog *item, ProgList *list) {
-    puts("addProg");
     if (list->length >= INT_MAX) {
+#ifdef MODE_DEBUG
+        fprintf(stderr, "addProg: ERROR: can not load prog with id=%d - list length exceeded\n", item->id);
+#endif
         return 0;
     }
     if (list->top == NULL) {
+        lockProgList();
         list->top = item;
+        unlockProgList();
     } else {
+        lockProg(list->last);
         list->last->next = item;
+        unlockProg(list->last);
     }
     list->last = item;
     list->length++;
 #ifdef MODE_DEBUG
-    printf("prog with id=%d loaded\n", item->id);
+    printf("addProg: prog with id=%d loaded\n", item->id);
 #endif
     return 1;
 }
 
 int addProgById(int id, ProgList *list) {
+#ifdef MODE_DEBUG
     printf("prog to add: %d\n", id);
-    Prog *p = getProgByIdFdb(id, &sensor_list, &em_list);
+#endif
+    Prog *p = getProgByIdFdb(id, &peer_list);
     if (p == NULL) {
         return 0;
     }
@@ -328,22 +229,32 @@ int addProgById(int id, ProgList *list) {
 }
 
 int deleteProgById(int id, ProgList *list) {
+#ifdef MODE_DEBUG
     printf("prog to delete: %d\n", id);
+#endif
     Prog *prev = NULL, *curr;
     int done = 0;
     curr = list->top;
     while (curr != NULL) {
         if (curr->id == id) {
+            saveProgActive(curr, 0);
             if (prev != NULL) {
+                lockProg(prev);
                 prev->next = curr->next;
+                unlockProg(prev);
             } else {//curr=top
+                lockProgList();
                 list->top = curr->next;
+                unlockProgList();
             }
             if (curr == list->last) {
                 list->last = prev;
             }
-            free(curr);
             list->length--;
+            //we will wait other threads to finish curr program and then we will free it
+            lockProg(curr);
+            unlockProg(curr);
+            free(curr);
 #ifdef MODE_DEBUG
             printf("prog with id: %d deleted from prog_list\n", id);
 #endif
@@ -357,192 +268,33 @@ int deleteProgById(int id, ProgList *list) {
     return done;
 }
 
-int switchProgById(int id, ProgList *list) {
+int reloadProgById(int id, ProgList *list) {
     if (deleteProgById(id, list)) {
         return 1;
     }
     return addProgById(id, list);
 }
 
-void loadAllProg(ProgList *list, const SensorList *slist, EMList *elist) {
-    PGresult *r;
-    char q[LINE_SIZE];
-    snprintf(q, sizeof q, "select sensor_id, em_id, goal, mode, kp, ki, kd, id from %s.prog where app_class='%s'", APP_NAME, app_class);
-    if ((r = dbGetDataT(*db_connp_data, q, "loadAllProg: select pin: ")) == NULL) {
-        return;
-    }
-    int n = PQntuples(r);
-    int i;
-    for (i = 0; i < n; i++) {
-        Prog *item = (Prog *) malloc(sizeof *(item));
-        if (item == NULL) {
-#ifdef MODE_DEBUG
-            fputs("getProgByIdFdb: failed to allocate memory\n", stderr);
-#endif
-            break;
-        }
-        item->sensor = getSensorById(atoi(PQgetvalue(r, i, 0)), slist);
-        item->em = getEMById(atoi(PQgetvalue(r, i, 1)), elist);
-        item->goal = atof(PQgetvalue(r, i, 2));
-        memcpy(&item->pid.mode, PQgetvalue(r, i, 3), sizeof item->pid.mode);
-        item->pid.kp = atof(PQgetvalue(r, i, 4));
-        item->pid.ki = atof(PQgetvalue(r, i, 5));
-        item->pid.kd = atof(PQgetvalue(r, i, 6));
-        item->id = atoi(PQgetvalue(r, i, 7));
-        item->state = INIT;
-        item->next = NULL;
-        if (!initMutex(&item->mutex)) {
-            free(item);
-            break;
-        }
-        if (!checkProg(item, list)) {
-            free(item);
-            break;
-        }
-        if (!addProg(item, list)) {
-            free(item);
-            break;
-        }
-    }
-    PQclear(r);
+int sensorRead(SensorFTS *item) {
+    return acp_readSensorFTS(item, udp_buf_size);
 }
 
-int checkSensor(const SensorList *list) {
-    size_t i, j;
-    for (i = 0; i < list->length; i++) {
-        if (list->item[i].source == NULL) {
-            fprintf(stderr, "checkSensorList: no data source where id = %d\n", list->item[i].id);
-            return 0;
-        }
-    }
-    //unique id
-    for (i = 0; i < list->length; i++) {
-        for (j = i + 1; j < list->length; j++) {
-            if (list->item[i].id == list->item[j].id) {
-                fprintf(stderr, "checkSensorList: id is not unique where id = %d\n", list->item[i].id);
-                return 0;
-            }
-        }
-    }
-    return 1;
-}
-
-int checkEM(const EMList *list) {
-    size_t i, j;
-    for (i = 0; i < list->length; i++) {
-        if (list->item[i].source == NULL) {
-            fprintf(stderr, "checkEm: no data source where id = %d\n", list->item[i].id);
-            return 0;
-        }
-    }
-    //unique id
-    for (i = 0; i < list->length; i++) {
-        for (j = i + 1; j < list->length; j++) {
-            if (list->item[i].id == list->item[j].id) {
-                fprintf(stderr, "checkEm: id is not unique where id = %d\n", list->item[i].id);
-                return 0;
-            }
-        }
-    }
-    return 1;
-}
-
-int checkProg(const Prog *item, const ProgList *list) {
-    if (item->sensor == NULL) {
-        fprintf(stderr, "checkProg: no sensor attached to prog with id = %d\n", item->id);
+int controlEM(EM *item, float output) {
+    if (item == NULL) {
         return 0;
     }
-    if (item->em == NULL) {
-        fprintf(stderr, "checkProg: no EM attached to prog with id = %d\n", item->id);
-        return 0;
-    }
-    switch (item->pid.mode) {
-        case PID_MODE_HEATER:
-        case PID_MODE_COOLER:
-            break;
-        default:
-            fprintf(stderr, "checkProg: bad mode for prog with id = %d\n", item->id);
-            return 0;
-    }
-    //unique id
-    if (getProgById(item->id, list) != NULL) {
-        fprintf(stderr, "checkProg: prog with id = %d is already running\n", item->id);
-        return 0;
-    }
-    return 1;
-}
-
-int sensorRead(Sensor *s) {
-    if (s == NULL) {
-        return 0;
-    }
-    int di[1];
-    di[0] = s->remote_id;
-    I1List data = {di, 1};
-
-    if (!acp_sendBufArrPackI1List(ACP_CMD_GET_FTS, udp_buf_size, &data, s->source)) {
-#ifdef MODE_DEBUG
-        fputs("sensorRead: acp_sendBufArrPackI1List failed\n", stderr);
-#endif
-        s->value.state = 0;
-        return 0;
-    }
-    //waiting for response...
-    FTS td[1];
-    FTSList tl = {td, 0};
-
-    if (!acp_recvFTS(&tl, ACP_QUANTIFIER_SPECIFIC, ACP_RESP_REQUEST_SUCCEEDED, udp_buf_size, 1, *(s->source->fd))) {
-#ifdef MODE_DEBUG
-        fputs("sensorRead: acp_recvFTS() error\n", stderr);
-#endif
-        s->value.state = 0;
-        return 0;
-    }
-    if (tl.item[0].state == 1 && tl.item[0].id == s->id) {
-        s->value = tl.item[0];
-        return 1;
-    } else {
-#ifdef MODE_DEBUG
-        fputs("sensorRead: response: temperature sensor state is bad or id is not requested one\n", stderr);
-#endif
-        s->value.state = 0;
-
-        return 0;
-    }
-    return 1;
-}
-
-int controlEM(EM *em, float output) {
-    if (em == NULL) {
-        return 0;
-    }
-    if (output == em->last_output) {
-        return 0;
-    }
-    I2 di[1];
-    di[0].p0 = em->remote_id;
-    di[0].p1 = (int) output;
-    I2List data = {di, 1};
-    if (!acp_sendBufArrPackI2List(ACP_CMD_SET_DUTY_CYCLE_PWM, udp_buf_size, &data, em->source)) {
-#ifdef MODE_DEBUG
-        fputs("controlEM: failed to send request\n", stderr);
-#endif
-        return 0;
-    }
-    em->last_output = output;
-    return 1;
+    return acp_setEMDutyCycleR(item, output, udp_buf_size);
 }
 
 int saveTune(int id, float kp, float ki, float kd) {
     PGresult *r;
     char q[LINE_SIZE];
-    snprintf(q, sizeof q, "update %s.prog set kp=%0.3f, ki=%0.3f, kd=%0.3f where app_class='%s' and id=%d", APP_NAME, kp, ki, kd, app_class, id);
-    r = dbGetDataC(*db_connp_data, q, "save pid tune: update prog: ");
+    snprintf(q, sizeof q, "update " APP_NAME_STR ".prog set kp=%0.3f, ki=%0.3f, kd=%0.3f where app_class='%s' and id=%d", kp, ki, kd, app_class, id);
+    r = dbGetDataC(db_conn_data, q, "save pid tune: update prog: ");
     if (r == NULL) {
         return 0;
     }
     PQclear(r);
-
     return 1;
 }
 
@@ -565,7 +317,7 @@ void serverRun(int *state, int init_state) {
 #endif    
     if (!crc_check(buf_in, sizeof buf_in)) {
 #ifdef MODE_DEBUG
-        fputs("serverRun: crc check failed\n", stderr);
+        fputs("WARNING: serverRun: crc check failed\n", stderr);
 #endif
         return;
     }
@@ -577,22 +329,16 @@ void serverRun(int *state, int init_state) {
             return;
         case ACP_CMD_APP_STOP:
             if (init_state) {
-                if (thread_data.on) {
-                    waitThreadCmd(&thread_data.cmd, &thread_data.qfr, buf_in);
-                }
+                waitThread_ctl(buf_in[1]);
                 *state = APP_STOP;
             }
             return;
         case ACP_CMD_APP_RESET:
-            if (thread_data.on) {
-                waitThreadCmd(&thread_data.cmd, &thread_data.qfr, buf_in);
-            }
+            waitThread_ctl(buf_in[1]);
             *state = APP_RESET;
             return;
         case ACP_CMD_APP_EXIT:
-            if (thread_data.on) {
-                waitThreadCmd(&thread_data.cmd, &thread_data.qfr, buf_in);
-            }
+            waitThread_ctl(buf_in[1]);
             *state = APP_EXIT;
             return;
         case ACP_CMD_APP_PING:
@@ -603,7 +349,7 @@ void serverRun(int *state, int init_state) {
             }
             return;
         case ACP_CMD_APP_PRINT:
-            printAll(&prog_list, &peer_list, &em_list, &sensor_list);
+            printAll(&prog_list, &peer_list);
             return;
         case ACP_CMD_APP_HELP:
             printHelp();
@@ -626,29 +372,33 @@ void serverRun(int *state, int init_state) {
     switch (buf_in[1]) {
         case ACP_CMD_STOP:
         case ACP_CMD_START:
-        case ACP_CMD_REGSMP_PROG_GET_DATA:
+        case ACP_CMD_RESET:
+        case ACP_CMD_REGSMP_PROG_SWITCH_STATE:
+        case ACP_CMD_REGSMP_PROG_GET_DATA_RUNTIME:
+        case ACP_CMD_REGSMP_PROG_GET_DATA_INIT:
             switch (buf_in[0]) {
                 case ACP_QUANTIFIER_BROADCAST:
                     break;
                 case ACP_QUANTIFIER_SPECIFIC:
-                    acp_parsePackI1(buf_in, &thread_data.i1l, udp_buf_size);
-                    if (thread_data.i1l.length <= 0) {
+                    acp_parsePackI1(buf_in, &i1l, udp_buf_size);
+                    if (i1l.length <= 0) {
                         return;
                     }
                     break;
             }
             break;
-        case ACP_CMD_REGSMP_PROG_SET_STATE://reg or tune
+        case ACP_CMD_REGSMP_PROG_SET_HEATER_POWER:
+        case ACP_CMD_REGSMP_PROG_SET_COOLER_POWER:
             switch (buf_in[0]) {
                 case ACP_QUANTIFIER_BROADCAST:
-                    acp_parsePackS1(buf_in, &thread_data.s1l, udp_buf_size);
-                    if (thread_data.s1l.length <= 0) {
+                    acp_parsePackF1(buf_in, &f1l, udp_buf_size);
+                    if (f1l.length <= 0) {
                         return;
                     }
                     break;
                 case ACP_QUANTIFIER_SPECIFIC:
-                    acp_parsePackI1S1(buf_in, &thread_data.i1s1l, udp_buf_size);
-                    if (thread_data.i1s1l.length <= 0) {
+                    acp_parsePackI1F1(buf_in, &i1f1l, udp_buf_size);
+                    if (i1f1l.length <= 0) {
                         return;
                     }
                     break;
@@ -661,28 +411,125 @@ void serverRun(int *state, int init_state) {
 
     switch (buf_in[1]) {
         case ACP_CMD_STOP:
-        case ACP_CMD_START:
-        case ACP_CMD_REGSMP_PROG_SET_STATE:
-            if (thread_data.on) {
-                waitThreadCmd(&thread_data.cmd, &thread_data.qfr, buf_in);
-            }
-            break;
-        case ACP_CMD_REGSMP_PROG_GET_DATA:
-            break;
-    }
-
-    switch (buf_in[1]) {
-        case ACP_CMD_STOP:
-        case ACP_CMD_START:
-        case ACP_CMD_REGSMP_PROG_SET_STATE:
-            return;
-        case ACP_CMD_REGSMP_PROG_GET_DATA:
             switch (buf_in[0]) {
                 case ACP_QUANTIFIER_BROADCAST:
                 {
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    curr->state = OFF;
+                    controlEM(&curr->em_h, 0.0f);
+                    controlEM(&curr->em_c, 0.0f);
+                    deleteProgById(curr->id, &prog_list);
+                    PROG_LIST_LOOP_SP
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1l.item[i], &prog_list);
+                        if (curr != NULL) {
+                            curr->state = OFF;
+                            controlEM(&curr->em_h, 0.0f);
+                            controlEM(&curr->em_c, 0.0f);
+                            deleteProgById(i1l.item[i], &prog_list);
+                        }
+                    }
+                    break;
+            }
+            return;
+        case ACP_CMD_START:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+
+                    loadAllProg(&prog_list, &peer_list);
+
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+
+                    for (i = 0; i < i1l.length; i++) {
+                        addProgById(i1l.item[i], &prog_list);
+                    }
+
+                    break;
+            }
+            return;
+        case ACP_CMD_RESET:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    curr->state = OFF;
+                    controlEM(&curr->em_h, 0.0f);
+                    controlEM(&curr->em_c, 0.0f);
+                    deleteProgById(curr->id, &prog_list);
+                    PROG_LIST_LOOP_SP
+                    loadAllProg(&prog_list, &peer_list);
+
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1l.item[i], &prog_list);
+                        if (curr != NULL) {
+                            curr->state = OFF;
+                            controlEM(&curr->em_h, 0.0f);
+                            controlEM(&curr->em_c, 0.0f);
+                            deleteProgById(i1l.item[i], &prog_list);
+                        }
+                    }
+                    for (i = 0; i < i1l.length; i++) {
+                        addProgById(i1l.item[i], &prog_list);
+                    }
+
+                    break;
+            }
+            return;
+        case ACP_CMD_REGSMP_PROG_SWITCH_STATE:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+                    PROG_LIST_LOOP_DF
                     PROG_LIST_LOOP_ST
                     if (lockProg(curr)) {
-                        if (!bufCatProg(curr, buf_out, udp_buf_size)) {
+                        if (curr->state == REG) {
+                            curr->state = NOREG;
+                        } else if (curr->state == NOREG) {
+                            curr->state = REG;
+                        }
+                        unlockProg(curr);
+                    }
+                    PROG_LIST_LOOP_SP
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1l.item[i], &prog_list);
+                        if (curr != NULL) {
+                            if (lockProg(curr)) {
+                                if (curr->state == REG) {
+                                    curr->state = NOREG;
+                                } else if (curr->state == NOREG) {
+                                    curr->state = REG;
+                                }
+                                unlockProg(curr);
+                            }
+                        }
+                    }
+                    break;
+            }
+            return;
+        case ACP_CMD_REGSMP_PROG_GET_DATA_RUNTIME:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    if (lockProg(curr)) {
+                        if (!bufCatProgRuntime(curr, buf_out, udp_buf_size)) {
                             sendStrPack(ACP_QUANTIFIER_BROADCAST, ACP_RESP_BUF_OVERFLOW);
                             return;
                         }
@@ -692,11 +539,11 @@ void serverRun(int *state, int init_state) {
                     break;
                 }
                 case ACP_QUANTIFIER_SPECIFIC:
-                    for (i = 0; i < thread_data.i1l.length; i++) {
-                        Prog *curr = getProgById(thread_data.i1l.item[i], &prog_list);
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1l.item[i], &prog_list);
                         if (curr != NULL) {
                             if (lockProg(curr)) {
-                                if (!bufCatProg(curr, buf_out, udp_buf_size)) {
+                                if (!bufCatProgRuntime(curr, buf_out, udp_buf_size)) {
                                     sendStrPack(ACP_QUANTIFIER_BROADCAST, ACP_RESP_BUF_OVERFLOW);
                                     return;
                                 }
@@ -707,10 +554,99 @@ void serverRun(int *state, int init_state) {
                     break;
             }
             break;
+        case ACP_CMD_REGSMP_PROG_GET_DATA_INIT:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    if (lockProg(curr)) {
+                        if (!bufCatProgInit(curr, buf_out, udp_buf_size)) {
+                            sendStrPack(ACP_QUANTIFIER_BROADCAST, ACP_RESP_BUF_OVERFLOW);
+                            return;
+                        }
+                        unlockProg(curr);
+                    }
+                    PROG_LIST_LOOP_SP
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1l.item[i], &prog_list);
+                        if (curr != NULL) {
+                            if (lockProg(curr)) {
+                                if (!bufCatProgInit(curr, buf_out, udp_buf_size)) {
+                                    sendStrPack(ACP_QUANTIFIER_BROADCAST, ACP_RESP_BUF_OVERFLOW);
+                                    return;
+                                }
+                                unlockProg(curr);
+                            }
+                        }
+                    }
+                    break;
+            }
+            break;
+        case ACP_CMD_REGSMP_PROG_SET_HEATER_POWER:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    if (lockProg(curr)) {
+                        controlEM(&curr->em_h, f1l.item[0]);
+                        curr->output_heater = f1l.item[0];
+                        unlockProg(curr);
+                    }
+                    PROG_LIST_LOOP_SP
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1f1l.item[i].p0, &prog_list);
+                        if (curr != NULL) {
+                            if (lockProg(curr)) {
+                                controlEM(&curr->em_h, i1f1l.item[i].p1);
+                                curr->output_heater = i1f1l.item[i].p1;
+                                unlockProg(curr);
+                            }
+                        }
+                    }
+                    break;
+            }
+            return;
+        case ACP_CMD_REGSMP_PROG_SET_COOLER_POWER:
+            switch (buf_in[0]) {
+                case ACP_QUANTIFIER_BROADCAST:
+                {
+                    PROG_LIST_LOOP_DF
+                    PROG_LIST_LOOP_ST
+                    if (lockProg(curr)) {
+                        controlEM(&curr->em_c, f1l.item[0]);
+                        curr->output_cooler = f1l.item[0];
+                        unlockProg(curr);
+                    }
+                    PROG_LIST_LOOP_SP
+                    break;
+                }
+                case ACP_QUANTIFIER_SPECIFIC:
+                    for (i = 0; i < i1l.length; i++) {
+                        Prog *curr = getProgById(i1f1l.item[i].p0, &prog_list);
+                        if (curr != NULL) {
+                            if (lockProg(curr)) {
+                                controlEM(&curr->em_c, i1f1l.item[i].p1);
+                                curr->output_cooler = i1f1l.item[i].p1;
+                                unlockProg(curr);
+                            }
+                        }
+                    }
+                    break;
+            }
+            return;
     }
 
     switch (buf_in[1]) {
-        case ACP_CMD_REGSMP_PROG_GET_DATA:
+        case ACP_CMD_REGSMP_PROG_GET_DATA_RUNTIME:
+        case ACP_CMD_REGSMP_PROG_GET_DATA_INIT:
             if (!sendBufPack(buf_out, ACP_QUANTIFIER_SPECIFIC, ACP_RESP_REQUEST_SUCCEEDED)) {
                 sendStrPack(ACP_QUANTIFIER_BROADCAST, ACP_RESP_BUF_OVERFLOW);
                 return;
@@ -721,45 +657,137 @@ void serverRun(int *state, int init_state) {
 
 }
 
-void secure() {
-    size_t i;
-    for (i = 0; i < em_list.length; i++) {
-        controlEM(&em_list.item[i], 0.0f);
-    }
-}
-
 void progControl(Prog *item) {
     switch (item->state) {
         case INIT:
-            item->pid.reset = 1;
-            item->state = REG;
+            item->pid_h.reset = 1;
+            item->pid_c.reset = 1;
+            item->tmr.ready = 0;
+            item->state_r = HEATER;
+            controlEM(&item->em_h, 0.0f);
+            controlEM(&item->em_c, 0.0f);
+            item->output_heater = 0.0f;
+            item->output_cooler = 0.0f;
+            if (sensorRead(&item->sensor)) {
+                if (SNSR_VAL > item->goal) {
+                    item->state_r = COOLER;
+                }
+                item->state = REG;
+
+            }
             break;
         case REG:
-            if (sensorRead(item->sensor)) {
-                item->output = pid(&item->pid, item->goal, item->sensor->value.value);
-                //item->output = pidwt(&item->pid, item->goal, item->sensor->value.value, item->sensor->value.tm);
+        {
+            if (sensorRead(&item->sensor)) {
+                int value_is_out = 0;
+                char other_em;
+                EM *em_turn_off;
+                switch (item->state_r) {
+                    case HEATER:
+                        if (VAL_IS_OUT_H) {
+                            value_is_out = 1;
+                        }
+                        other_em = COOLER;
+                        em_turn_off = &item->em_h;
+                        break;
+                    case COOLER:
+                        if (VAL_IS_OUT_C) {
+                            value_is_out = 1;
+                        }
+                        other_em = HEATER;
+                        em_turn_off = &item->em_c;
+                        break;
+                }
+                if (value_is_out) {
+                    if (ton_ts(item->change_gap, &item->tmr)) {
 #ifdef MODE_DEBUG
-                printf("prog_id=%d: state=REG goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.value, item->output);
-                //  printf("pid_mode=%c pid_ie=%.1f\n", item->pid.mode, item->pid.integral_error);
+                        char *state1 = getStateStr(item->state_r);
+                        char *state2 = getStateStr(other_em);
+                        printf("prog_id=%d: state_r switched from %s to %s\n", item->id, state1, state2);
+                        //  printf("pid_mode=%c pid_ie=%.1f\n", item->pid.mode, item->pid.integral_error);
 #endif
-                controlEM(item->em, item->output);
-            }
-            break;
-        case TUNE:
-            if (sensorRead(item->sensor)) {
-                if (pidAutoTune(&item->pid_at, &item->pid, item->sensor->value.value, &item->output)) {
-                    saveTune(item->id, item->pid.kp, item->pid.ki, item->pid.kd);
-                    item->state = REG;
+                        item->state_r = other_em;
+                        controlEM(em_turn_off, 0.0f);
+                        if (em_turn_off == &item->em_h) {
+                            item->output_heater = 0.0f;
+                        } else if (em_turn_off == &item->em_c) {
+                            item->output_cooler = 0.0f;
+                        }
+                    }
+                } else {
+                    item->tmr.ready = 0;
+                }
+                PID *pidp = NULL;
+                EM *em = NULL;
+                EM *em_other = NULL;
+                switch (item->state_r) {
+                    case HEATER:
+                        item->pid_h.max_output = item->em_h.pwm_rsl;
+                        pidp = &item->pid_h;
+                        em = &item->em_h;
+                        em_other = &item->em_c;
+                        break;
+                    case COOLER:
+                        item->pid_c.max_output = item->em_c.pwm_rsl;
+                        pidp = &item->pid_c;
+                        em = &item->em_c;
+                        em_other = &item->em_h;
+                        break;
+                }
+                switch (item->mode) {
+                    case CNT_PID:
+                        item->output = pidwt_mx(pidp, item->goal, SNSR_VAL, SNSR_TM);
+                        break;
+                    case CNT_ONF:
+                        item->output = 0.0f;
+                        switch (item->state_r) {
+                            case HEATER:
+                                if (SNSR_VAL < item->goal - item->delta) {
+                                    item->output = em->pwm_rsl;
+                                }
+                                break;
+                            case COOLER:
+                                if (SNSR_VAL > item->goal + item->delta) {
+                                    item->output = em->pwm_rsl;
+                                }
+                                break;
+                        }
+                        break;
+                }
+                controlEM(em, item->output);
+                controlEM(em_other, 0.0f);
+                if (em == &item->em_h) {
+                    item->output_heater = item->output;
+                } else if (em == &item->em_c) {
+                    item->output_cooler = item->output;
+                }
+                if (em_other == &item->em_h) {
+                    item->output_heater = 0.0f;
+                } else if (em_other == &item->em_c) {
+                    item->output_cooler = 0.0f;
                 }
 #ifdef MODE_DEBUG
-                printf("prog_id=%d: state=TUNE goal=%.1f real=%.1f out=%.1f\n", item->id, item->goal, item->sensor->value.value, item->output);
-                // printf("pid_mode=%c pid_ie=%.1f\n", item->pid.mode, item->pid.integral_error);
+                char *state_r = getStateStr(item->state_r);
+                char *mode = getStateStr(item->mode);
+                printf("prog_id=%d: mode=%s EM_state=%s goal=%.1f real=%.1f out=%.1f\n", item->id, mode, state_r, item->goal, SNSR_VAL, item->output);
 #endif
-                controlEM(item->em, item->output);
+            } else {
+                controlEM(&item->em_h, 0.0f);
+                controlEM(&item->em_c, 0.0f);
+                item->output_heater = 0.0f;
+                item->output_cooler = 0.0f;
+#ifdef MODE_DEBUG
+                puts("reading from sensor failed, EM turned off");
+#endif
             }
+            break;
+        }
+        case NOREG:
+            sensorRead(&item->sensor);
             break;
         case OFF:
             break;
+
         default:
             item->state = INIT;
             break;
@@ -767,162 +795,60 @@ void progControl(Prog *item) {
 }
 
 void *threadFunction(void *arg) {
-    ThreadData *data = (ThreadData *) arg;
-    data->on = 1;
-    int r;
-    if (pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, &r) != 0) {
-        perror("threadFunction: pthread_setcancelstate");
-    }
-    if (pthread_setcanceltype(PTHREAD_CANCEL_DEFERRED, &r) != 0) {
-        perror("threadFunction: pthread_setcanceltype");
-    }
-
+    char *cmd = (char *) arg;
+#ifndef MODE_DEBUG
+    puts("threadFunction: running...");
+#endif
     while (1) {
-        size_t i;
-        struct timespec t1;
-        clock_gettime(LIB_CLOCK, &t1);
-        PROG_LIST_LOOP_ST
-        if (tryLockProg(curr)) {
-            progControl(curr);
-            unlockProg(curr);
+        struct timespec t1 = getCurrentTime();
+
+        lockProgList();
+        Prog *curr = prog_list.top;
+        unlockProgList();
+        while (1) {
+            if (curr == NULL) {
+                break;
+            }
+            if (tryLockProg(curr)) {
+                progControl(curr);
+                Prog *temp = curr;
+                curr = curr->next;
+                unlockProg(temp);
+            }
+
+
+            switch (*cmd) {
+                case ACP_CMD_APP_STOP:
+                case ACP_CMD_APP_RESET:
+                case ACP_CMD_APP_EXIT:
+                    *cmd = ACP_CMD_APP_NO;
+                    return (EXIT_SUCCESS);
+                default:
+                    break;
+            }
         }
-        PROG_LIST_LOOP_SP
-
-        switch (data->cmd) {
-            case ACP_CMD_STOP:
-            case ACP_CMD_START:
-                switch (data->qfr) {
-                    case ACP_QUANTIFIER_BROADCAST:
-                    {
-                        switch (data->cmd) {
-                            case ACP_CMD_STOP:
-                            {
-                                PROG_LIST_LOOP_ST
-                                controlEM(curr->em, 0.0f);
-                                PROG_LIST_LOOP_SP
-                                freeProg(&prog_list);
-                                break;
-                            }
-                            case ACP_CMD_START:
-                                loadAllProg(&prog_list, &sensor_list, &em_list);
-                                break;
-                        }
-
-                        break;
-                    }
-                    case ACP_QUANTIFIER_SPECIFIC:
-                        for (i = 0; i < data->i1l.length; i++) {
-                            data->i1l.item[i];
-                            switch (data->cmd) {
-                                case ACP_CMD_STOP:
-                                {
-                                    Prog *p = getProgById(data->i1l.item[i], &prog_list);
-                                    if (p != NULL) {
-                                        controlEM(p->em, 0.0f);
-                                    }
-                                    deleteProgById(data->i1l.item[i], &prog_list);
-                                    break;
-                                }
-                                case ACP_CMD_START:
-                                    addProgById(data->i1l.item[i], &prog_list);
-                                    break;
-                            }
-
-                        }
-                        break;
-                }
-                break;
-            case ACP_CMD_REGSMP_PROG_SET_STATE:
-                switch (data->qfr) {
-                    case ACP_QUANTIFIER_BROADCAST:
-                    {
-                        PROG_LIST_LOOP_ST
-                        if (strcmp(data->s1l.item, STATE_STR_REG) == 0) {
-                            curr->state = REG;
-                        } else if (strcmp(data->s1l.item, STATE_STR_TUNE) == 0) {
-                            curr->state = TUNE;
-                        }
-                        PROG_LIST_LOOP_SP
-                        break;
-                    }
-                    case ACP_QUANTIFIER_SPECIFIC:
-                        for (i = 0; i < data->i1s1l.length; i++) {
-                            Prog *p = getProgById(data->i1l.item[i], &prog_list);
-                            if (p != NULL) {
-                                if (strcmp(data->i1s1l.item[i].p1, STATE_STR_REG) == 0) {
-                                    p->state = REG;
-                                } else if (strcmp(data->i1s1l.item[i].p1, STATE_STR_TUNE) == 0) {
-                                    p->state = TUNE;
-                                }
-                            }
-                        }
-                        break;
-                }
-                break;
+        switch (*cmd) {
             case ACP_CMD_APP_STOP:
             case ACP_CMD_APP_RESET:
             case ACP_CMD_APP_EXIT:
-                secure();
-                data->cmd = ACP_CMD_APP_NO;
-                data->on = 0;
+                *cmd = ACP_CMD_APP_NO;
                 return (EXIT_SUCCESS);
-
             default:
                 break;
         }
-        data->cmd = ACP_CMD_APP_NO; //notify main thread that command has been executed
-        sleepRest(data->cycle_duration, t1);
+        sleepRest(cycle_duration, t1);
     }
 }
 
-int createThread(ThreadData * td, size_t buf_len) {
-    //set attributes for each thread
-    if (pthread_attr_init(&td->thread_attr) != 0) {
-        perror("createThreads: pthread_attr_init");
-        return 0;
-    }
-    td->attr_initialized = 1;
-    td->cycle_duration = cycle_duration;
-    if (pthread_attr_setdetachstate(&td->thread_attr, PTHREAD_CREATE_DETACHED) != 0) {
-        perror("createThreads: pthread_attr_setdetachstate");
-        return 0;
-    }
-    td->i1l.item = (int *) malloc(buf_len * sizeof *(td->i1l.item));
-    if (td->i1l.item == NULL) {
-        perror("createThreads: memory allocation for i1l failed");
-        return 0;
-    }
-    td->f1l.item = (float *) malloc(buf_len * sizeof *(td->f1l.item));
-    if (td->f1l.item == NULL) {
-        perror("createThreads: memory allocation for f1l failed");
-        return 0;
-    }
-    td->i1f1l.item = (I1F1 *) malloc(buf_len * sizeof *(td->i1f1l.item));
-    if (td->i1f1l.item == NULL) {
-        perror("createThreads: memory allocation for i1f1l failed");
-        return 0;
-    }
-    td->s1l.item = (char *) malloc(buf_len * NAME_SIZE * sizeof *(td->s1l.item));
-    if (td->s1l.item == NULL) {
-        perror("createThreads: memory allocation for s1l failed");
-        return 0;
-    }
-    td->i1s1l.item = (I1S1 *) malloc(buf_len * sizeof *(td->i1s1l.item));
-    if (td->i1s1l.item == NULL) {
-        perror("createThreads: memory allocation for i1s1l failed");
-        return 0;
-    }
-    //create a thread
-    if (pthread_create(&td->thread, &td->thread_attr, threadFunction, (void *) td) != 0) {
+int createThread_ctl() {
+    if (pthread_create(&thread, NULL, &threadFunction, (void *) &thread_cmd) != 0) {
         perror("createThreads: pthread_create");
         return 0;
     }
-    td->created = 1;
-
     return 1;
 }
 
-void freeProg(ProgList *list) {
+void freeProg(ProgList * list) {
     Prog *curr = list->top, *temp;
     while (curr != NULL) {
         temp = curr;
@@ -934,55 +860,34 @@ void freeProg(ProgList *list) {
     list->length = 0;
 }
 
-void freeThread() {
-    if (thread_data.created) {
-        if (thread_data.on) {
-            char cmd[2] = {ACP_QUANTIFIER_BROADCAST, ACP_CMD_APP_EXIT};
-            waitThreadCmd(&thread_data.cmd, &thread_data.qfr, cmd);
-        }
-        if (pthread_attr_destroy(&thread_data.thread_attr) != 0) {
-            perror("freeThread: pthread_attr_destroy");
-        }
-    } else {
-        if (thread_data.attr_initialized) {
-            if (pthread_attr_destroy(&thread_data.thread_attr) != 0) {
-
-                perror("freeThread: pthread_attr_destroy");
-            }
-        }
-    }
-    free(thread_data.i1l.item);
-    thread_data.i1l.item = NULL;
-    free(thread_data.f1l.item);
-    thread_data.f1l.item = NULL;
-    free(thread_data.i1f1l.item);
-    thread_data.i1f1l.item = NULL;
-    free(thread_data.s1l.item);
-    thread_data.s1l.item = NULL;
-    free(thread_data.i1s1l.item);
-    thread_data.i1s1l.item = NULL;
-    thread_data.on = 0;
-    thread_data.cmd = ACP_CMD_APP_NO;
+void secure() {
+    PROG_LIST_LOOP_DF
+    PROG_LIST_LOOP_ST
+    controlEM(&curr->em_h, 0.0f);
+    controlEM(&curr->em_c, 0.0f);
+    PROG_LIST_LOOP_SP
 }
 
 void freeData() {
-    freeThread();
+    waitThread_ctl(ACP_CMD_APP_EXIT);
+    secure();
     freeProg(&prog_list);
-    FREE_LIST(&em_list);
-    FREE_LIST(&sensor_list);
-    freePeer(&peer_list);
-    freeDB(&db_conn_data);
-    freeDB(&db_conn_public);
-    data_initialized = 0;
+    FREE_LIST(&f1l);
+    FREE_LIST(&i1f1l);
+    FREE_LIST(&i1l);
+    freeDB(db_conn_data);
+#ifndef MODE_DEBUG
+    puts("freeData: done");
+#endif
 }
 
 void freeApp() {
     freeData();
+    freePeer(&peer_list);
     freeSocketFd(&udp_fd);
     freeSocketFd(&udp_fd_tf);
     freeMutex(&progl_mutex);
     freePid(&pid_file, &proc_id, pid_path);
-    freeDB(&db_conn_settings);
 }
 
 void exit_nicely() {
@@ -1005,28 +910,51 @@ int main(int argc, char** argv) {
     if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
         perror("main: memory locking failed");
     }
+    int data_initialized = 0;
     while (1) {
         switch (app_state) {
             case APP_INIT:
+#ifdef MODE_DEBUG
+                puts("MAIN: init");
+#endif
                 initApp();
                 app_state = APP_INIT_DATA;
                 break;
             case APP_INIT_DATA:
-                initData();
+#ifdef MODE_DEBUG
+                puts("MAIN: init data");
+#endif
+                data_initialized = initData();
                 app_state = APP_RUN;
+                delayUsIdle(1000000);
                 break;
             case APP_RUN:
+#ifdef MODE_DEBUG
+                puts("MAIN: run");
+#endif
                 serverRun(&app_state, data_initialized);
                 break;
             case APP_STOP:
+#ifdef MODE_DEBUG
+                puts("MAIN: stop");
+#endif
                 freeData();
+                data_initialized = 0;
                 app_state = APP_RUN;
                 break;
             case APP_RESET:
+#ifdef MODE_DEBUG
+                puts("MAIN: reset");
+#endif
                 freeApp();
+                delayUsIdle(1000000);
+                data_initialized = 0;
                 app_state = APP_INIT;
                 break;
             case APP_EXIT:
+#ifdef MODE_DEBUG
+                puts("MAIN: exit");
+#endif
                 exit_nicely();
                 break;
             default:
