@@ -9,6 +9,7 @@ typedef struct {
     EM em;
     float delta;
     float output;
+    int use;
 } RegOnfHCEM;
 
 typedef struct {
@@ -44,6 +45,8 @@ extern void regonfhc_setChangeGap(RegOnfHC *item, int value);
 extern void regonfhc_setHeaterPower(RegOnfHC *item, float value);
 
 extern void regonfhc_setCoolerPower(RegOnfHC *item, float value);
+
+extern void regonfhc_setEMMode(RegOnfHC *item, const char * value);
 
 extern void regonfhc_turnOff(RegOnfHC *item);
 

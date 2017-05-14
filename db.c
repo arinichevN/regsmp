@@ -151,13 +151,13 @@ int loadProg_callback(void *d, int argc, char **argv, char **azColName) {
                 return 1;
             }
         } else if (strcmp("em_mode", azColName[i]) == 0) {
-            if (strcmp(REG_PIDONF_HC_EM_MODE_COOLER_STR, argv[i]) == 0) {
+            if (strcmp(REG_EM_MODE_COOLER_STR, argv[i]) == 0) {
                 item->reg.cooler.use = 1;
                 item->reg.heater.use = 0;
-            } else if (strcmp(REG_PIDONF_HC_EM_MODE_HEATER_STR, argv[i]) == 0) {
+            } else if (strcmp(REG_EM_MODE_HEATER_STR, argv[i]) == 0) {
                 item->reg.cooler.use = 0;
                 item->reg.heater.use = 1;
-            } else if (strcmp(REG_PIDONF_HC_EM_MODE_BOTH_STR, argv[i]) == 0) {
+            } else if (strcmp(REG_EM_MODE_BOTH_STR, argv[i]) == 0) {
                 item->reg.cooler.use = 1;
                 item->reg.heater.use = 1;
             } else {

@@ -6,9 +6,6 @@
 #include "reg.h"
 #include "pid.h"
 
-#define REG_PIDONF_HC_EM_MODE_COOLER_STR "cooler"
-#define REG_PIDONF_HC_EM_MODE_HEATER_STR "heater"
-#define REG_PIDONF_HC_EM_MODE_BOTH_STR "both"
 typedef struct {
     EM em;
     float delta;

@@ -682,7 +682,7 @@ void serverRun(int *state, int init_state) {
                     break;
                 }
                 case ACP_QUANTIFIER_SPECIFIC:
-                    for (i = 0; i < i1f1l.length; i++) {
+                    for (i = 0; i < i2l.length; i++) {
                         Prog *curr = getProgById(i2l.item[i].p0, &prog_list);
                         if (curr != NULL) {
                             if (lockProg(curr)) {
