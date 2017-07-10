@@ -37,6 +37,6 @@ CREATE TABLE "em_mapping" (
     "em_id" INTEGER PRIMARY KEY NOT NULL,
     "peer_id" TEXT NOT NULL,
     "remote_id" INTEGER NOT NULL,
-    "pwm_rsl" REAL NOT NULL
+    "pwm_rsl" REAL NOT NULL--value that corresponds to 100% power on executive mechanism
 );
 
