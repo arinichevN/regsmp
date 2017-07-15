@@ -46,6 +46,8 @@ int readSettings() {
     }
 
     int n;
+    char s[LINE_SIZE];
+    fgets(s, LINE_SIZE, stream);
     n = fscanf(stream, "%d\t%255s\t%d\t%ld\t%ld\t%255s\t%255s\n",
             &sock_port,
             pid_path,
@@ -57,6 +59,9 @@ int readSettings() {
             );
     if (n != 7) {
         fclose(stream);
+        #ifdef MODE_DEBUG
+        fputs("ERROR: readSettings: bad format\n", stderr);
+#endif
         return 0;
     }
     fclose(stream);

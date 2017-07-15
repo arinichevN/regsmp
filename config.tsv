@@ -1,1 +1,2 @@
+port	PID_path	socket_buffer_size	cycle_duration_sec	cycle_duration_nsec	private_db_file	public_db_file
 49176	/var/run/regsmp.pid	508	5	0	/etc/controller/regsmp/data.db	/etc/controller/public.db
