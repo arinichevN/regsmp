@@ -65,6 +65,9 @@ int readSettings() {
         return 0;
     }
     fclose(stream);
+    #ifdef MODE_DEBUG
+    printf("readSettings: \n\tsock_port: %d, \n\tpid_path: %s, \n\tsock_buf_size: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", sock_port, pid_path, sock_buf_size, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
+#endif
     return 1;
 }
 
@@ -76,15 +79,6 @@ void initApp() {
     if (!initPid(&pid_file, &proc_id, pid_path)) {
         exit_nicely_e("initApp: failed to initialize pid\n");
     }
-#ifdef MODE_DEBUG
-    printf("initApp: PID: %d\n", proc_id);
-    printf("initApp: sock_port: %d\n", sock_port);
-    printf("initApp: sock_buf_size: %d\n", sock_buf_size);
-    printf("initApp: pid_path: %s\n", pid_path);
-    printf("initApp: cycle_duration: %ld(sec) %ld(nsec)\n", cycle_duration.tv_sec, cycle_duration.tv_nsec);
-    printf("initApp: db_data_path: %s\n", db_data_path);
-    printf("initApp: db_public_path: %s\n", db_public_path);
-#endif
     if (!initMutex(&progl_mutex)) {
         exit_nicely_e("initApp: failed to initialize prog mutex\n");
     }
