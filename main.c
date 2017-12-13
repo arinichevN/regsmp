@@ -262,6 +262,36 @@ void serverRun(int *state, int init_state) {
                 }
             }
         }
+            } else if (ACP_CMD_IS(ACP_CMD_PROG_GET_ENABLED)) {
+        PARSE_I1LIST
+        for (int i = 0; i < i1l.length; i++) {
+            Prog *curr = getProgById(i1l.item[i], &prog_list);
+            if (curr != NULL) {
+                if (!bufCatProgEnabled(curr, &response)) {
+                    return;
+                }
+            }
+        }
+    } else if (ACP_CMD_IS(ACP_CMD_REG_PROG_GET_GOAL)) {
+        PARSE_I1LIST
+        for (int i = 0; i < i1l.length; i++) {
+            Prog *curr = getProgById(i1l.item[i], &prog_list);
+            if (curr != NULL) {
+                if (!bufCatProgGoal(curr, &response)) {
+                    return;
+                }
+            }
+        }
+    } else if (ACP_CMD_IS(ACP_CMD_GET_FTS)) {
+        PARSE_I1LIST
+        for (int i = 0; i < i1l.length; i++) {
+            Prog *curr = getProgById(i1l.item[i], &prog_list);
+            if (curr != NULL) {
+                if (!bufCatProgFTS(curr, &response)) {
+                    return;
+                }
+            }
+        }
     } else if (ACP_CMD_IS(ACP_CMD_REG_PROG_SET_HEATER_POWER)) {
         PARSE_I1F1LIST
         for (int i = 0; i < i1f1l.length; i++) {

@@ -144,9 +144,31 @@ int bufCatProgInit(const Prog *item, ACPResponse *response) {
             );
     return acp_responseStrCat(response, q);
 }
+int bufCatProgGoal(const Prog *item, ACPResponse *response) {
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_ROW_STR,
+            item->id,
+            item->reg.goal
+            );
+    return acp_responseStrCat(response, q);
+}
 
+int bufCatProgFTS(const Prog *item, ACPResponse *response) {
+    return acp_responseFTSCat(item->id, item->reg.sensor.value.value, item->reg.sensor.value.tm, item->reg.sensor.value.state, response);
+}
+
+int bufCatProgEnabled(const Prog *item, ACPResponse *response) {
+    char q[LINE_SIZE];
+    int enabled = regpidonfhc_getEnabled(&item->reg);
+    snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR "%d" ACP_DELIMITER_ROW_STR,
+            item->id,
+            enabled
+            );
+    return acp_responseStrCat(response, q);
+}
 void printData(ACPResponse *response) {
-    ProgList *list=&prog_list; PeerList *pl=&peer_list;
+    ProgList *list = &prog_list;
+    PeerList *pl = &peer_list;
     char q[LINE_SIZE];
     size_t i;
     snprintf(q, sizeof q, "CONFIG_FILE: %s\n", CONFIG_FILE);
@@ -205,7 +227,7 @@ void printData(ACPResponse *response) {
     for (i = 0; i < pl->length; i++) {
         snprintf(q, sizeof q, "|%32s|%11p|%11u|%16u|%11d|\n",
                 pl->item[i].id,
-               (void *) &pl->item[i],
+                (void *) &pl->item[i],
                 pl->item[i].addr.sin_port,
                 pl->item[i].addr.sin_addr.s_addr,
                 *pl->item[i].fd
@@ -287,6 +309,12 @@ void printHelp(ACPResponse *response) {
     snprintf(q, sizeof q, "%s\tenable running program; program id expected\n", ACP_CMD_PROG_ENABLE);
     SEND_STR(q)
     snprintf(q, sizeof q, "%s\tdisable running program; program id expected\n", ACP_CMD_PROG_DISABLE);
+    SEND_STR(q)
+    snprintf(q, sizeof q, "%s\tget prog state (1-enabled, 0-disabled); program id expected\n", ACP_CMD_PROG_GET_ENABLED);
+    SEND_STR(q)
+    snprintf(q, sizeof q, "%s\tget prog goal; program id expected\n", ACP_CMD_REG_PROG_GET_GOAL);
+    SEND_STR(q)
+    snprintf(q, sizeof q, "%s\tget prog sensor value; program id expected\n", ACP_CMD_GET_FTS);
     SEND_STR(q)
     snprintf(q, sizeof q, "%s\tset heater power; program id and value expected\n", ACP_CMD_REG_PROG_SET_HEATER_POWER);
     SEND_STR(q)
