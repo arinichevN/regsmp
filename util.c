@@ -247,14 +247,14 @@ void printData(ACPResponse *response) {
     SEND_STR("+-----------+-----------+-----------+-----------+------------------------------------------+\n")
     SEND_STR("|           |           |           |           |                   value                  |\n")
     SEND_STR("|           |           |           |           |-----------+-----------+-----------+------+\n")
-    SEND_STR("|    id     |    id     | remote_id | peer_link |   value   |    sec    |   nsec    | state|\n")
+    SEND_STR("|    id     |    id     | remote_id |  peer_id  |   value   |    sec    |   nsec    | state|\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n")
     PROG_LIST_LOOP_ST
-    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11p|%11f|%11ld|%11ld|%6d|\n",
+    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11s|%11f|%11ld|%11ld|%6d|\n",
             curr->id,
             curr->reg.sensor.id,
             curr->reg.sensor.remote_id,
-            (void *) curr->reg.sensor.source,
+            curr->reg.sensor.source->id,
             curr->reg.sensor.value.value,
             curr->reg.sensor.value.tm.tv_sec,
             curr->reg.sensor.value.tm.tv_nsec,
