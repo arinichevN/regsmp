@@ -1,6 +1,4 @@
-/*
- * regsmp
- */
+
 #include "main.h"
 
 FUN_LLIST_GET_BY_ID(Prog)
@@ -168,9 +166,7 @@ int bufCatProgEnabled(const Prog *item, ACPResponse *response) {
 }
 void printData(ACPResponse *response) {
     ProgList *list = &prog_list;
-    PeerList *pl = &peer_list;
     char q[LINE_SIZE];
-    size_t i;
     snprintf(q, sizeof q, "CONFIG_FILE: %s\n", CONFIG_FILE);
     SEND_STR(q)
     snprintf(q, sizeof q, "port: %d\n", sock_port);
@@ -219,22 +215,7 @@ void printData(ACPResponse *response) {
     PROG_LIST_LOOP_SP
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
 
-    SEND_STR("+-------------------------------------------------------------------------------------+\n")
-    SEND_STR("|                                       Peer                                          |\n")
-    SEND_STR("+--------------------------------+-----------+-----------+----------------+-----------+\n")
-    SEND_STR("|               id               |   link    | sock_port |      addr      |     fd    |\n")
-    SEND_STR("+--------------------------------+-----------+-----------+----------------+-----------+\n")
-    for (i = 0; i < pl->length; i++) {
-        snprintf(q, sizeof q, "|%32s|%11p|%11u|%16u|%11d|\n",
-                pl->item[i].id,
-                (void *) &pl->item[i],
-                pl->item[i].addr.sin_port,
-                pl->item[i].addr.sin_addr.s_addr,
-                *pl->item[i].fd
-                );
-        SEND_STR(q)
-    }
-    SEND_STR("+--------------------------------+-----------+-----------+----------------+-----------+\n")
+   acp_sendPeerListInfo(&peer_list, response, &peer_client);
 
     SEND_STR("+-----------------------------------------------------------------------------------------------------------+\n")
     SEND_STR("|                                                    Prog EM                                                |\n")
@@ -259,8 +240,9 @@ void printData(ACPResponse *response) {
             );
     SEND_STR(q)
     PROG_LIST_LOOP_SP
-    SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
-    SEND_STR("+-----------+------------------------------------------------------------------------------+\n")
+                SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
+            
+            SEND_STR("+-----------+------------------------------------------------------------------------------+\n")
     SEND_STR("|    Prog   |                                   Sensor                                     |\n")
     SEND_STR("+-----------+-----------+-----------+-----------+------------------------------------------+\n")
     SEND_STR("|           |           |           |           |                   value                  |\n")
@@ -280,7 +262,8 @@ void printData(ACPResponse *response) {
             );
     SEND_STR(q)
     PROG_LIST_LOOP_SP
-    SEND_STR_L("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n")
+SEND_STR_L("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n")
+
 }
 
 void printHelp(ACPResponse *response) {
