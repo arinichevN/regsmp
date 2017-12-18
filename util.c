@@ -222,21 +222,21 @@ void printData(ACPResponse *response) {
     SEND_STR("+-----------+-----------------------------------------------+-----------------------------------------------+\n")
     SEND_STR("|           |                   EM heater                   |                  EM cooler                    |\n")
     SEND_STR("+           +-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
-    SEND_STR("|  prog_id  |     id    | remote_id |  pwm_rsl  | peer_link |     id    | remote_id |  pwm_rsl  | peer_link |\n")
+    SEND_STR("|  prog_id  |     id    | remote_id |  pwm_rsl  |  peer_id  |     id    | remote_id |  pwm_rsl  |  peer_id  |\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
     PROG_LIST_LOOP_ST
-    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11f|%11p|%11d|%11d|%11f|%11p|\n",
+    snprintf(q, sizeof q, "|%11d|%11d|%11d|%11f|%11s|%11d|%11d|%11f|%11s|\n",
             curr->id,
 
             curr->reg.heater.em.id,
             curr->reg.heater.em.remote_id,
             curr->reg.heater.em.pwm_rsl,
-            (void *) curr->reg.heater.em.source,
+             curr->reg.heater.em.source->id,
 
             curr->reg.cooler.em.id,
             curr->reg.cooler.em.remote_id,
             curr->reg.cooler.em.pwm_rsl,
-            (void *) curr->reg.cooler.em.source
+            curr->reg.cooler.em.source->id
             );
     SEND_STR(q)
     PROG_LIST_LOOP_SP
