@@ -1,17 +1,11 @@
-/*
- * regsmp
- */
 
 #include "main.h"
 
-char pid_path[LINE_SIZE];
 int app_state = APP_INIT;
 
 char db_data_path[LINE_SIZE];
 char db_public_path[LINE_SIZE];
 
-int pid_file = -1;
-int proc_id;
 int sock_port = -1;
 int sock_fd = -1;
 int sock_fd_tf = -1;
@@ -44,15 +38,14 @@ int readSettings() {
     }
     skipLine(stream);
     int n;
-    n = fscanf(stream, "%d\t%255s\t%ld\t%ld\t%255s\t%255s\n",
+    n = fscanf(stream, "%d\t%ld\t%ld\t%255s\t%255s\n",
             &sock_port,
-            pid_path,
             &cycle_duration.tv_sec,
             &cycle_duration.tv_nsec,
             db_data_path,
             db_public_path
             );
-    if (n != 6) {
+    if (n != 5) {
         fclose(stream);
 #ifdef MODE_DEBUG
         fputs("ERROR: readSettings: bad format\n", stderr);
@@ -61,7 +54,7 @@ int readSettings() {
     }
     fclose(stream);
 #ifdef MODE_DEBUG
-    printf("readSettings: \n\tsock_port: %d, \n\tpid_path: %s, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", sock_port, pid_path, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
+    printf("readSettings: \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
 #endif
     return 1;
 }
@@ -69,9 +62,6 @@ int readSettings() {
 void initApp() {
     if (!readSettings()) {
         exit_nicely_e("initApp: failed to read settings\n");
-    }
-    if (!initPid(&pid_file, &proc_id, pid_path)) {
-        exit_nicely_e("initApp: failed to initialize pid\n");
     }
     if (!initMutex(&progl_mutex)) {
         exit_nicely_e("initApp: failed to initialize prog mutex\n");
@@ -262,7 +252,7 @@ void serverRun(int *state, int init_state) {
                 }
             }
         }
-            } else if (ACP_CMD_IS(ACP_CMD_PROG_GET_ENABLED)) {
+    } else if (ACP_CMD_IS(ACP_CMD_PROG_GET_ENABLED)) {
         PARSE_I1LIST
         for (int i = 0; i < i1l.length; i++) {
             Prog *curr = getProgById(i1l.item[i], &prog_list);
@@ -371,6 +361,11 @@ void serverRun(int *state, int init_state) {
     } else if (ACP_CMD_IS(ACP_CMD_REG_PROG_SET_GOAL)) {
         PARSE_I1F1LIST
         for (int i = 0; i < i1f1l.length; i++) {
+            if(i1f1l.item[i].p1 > 100.0 && i1f1l.item[i].p1 < -20.0){
+                *state=APP_EXIT;
+                printf("found bad goal: %f\n", i1f1l.item[i].p1);
+                return;
+            }
             Prog *curr = getProgById(i1f1l.item[i].p0, &prog_list);
             if (curr != NULL) {
                 if (lockProg(curr)) {
@@ -560,7 +555,6 @@ void freeApp() {
     freeSocketFd(&sock_fd);
     freeSocketFd(&sock_fd_tf);
     freeMutex(&progl_mutex);
-    freePid(&pid_file, &proc_id, pid_path);
 }
 
 void exit_nicely() {

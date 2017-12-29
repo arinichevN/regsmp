@@ -1,6 +1,4 @@
-/*
- * regsmp
- */
+
 #include "main.h"
 
 int checkProg(const Prog *item, const ProgList *list) {

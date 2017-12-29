@@ -11,7 +11,6 @@ DEBUG_PARAM="-Wall -pedantic"
 MODE_DEBUG=-DMODE_DEBUG
 MODE_FULL=-DMODE_FULL
 
-PLATFORM=-DPLATFORM_ANY
 
 NONE=-DNONEANDNOTHING
 
@@ -51,18 +50,18 @@ function conf_autostart {
 }
 
 function build_lib {
-	gcc $1 $PLATFORM -c app.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1 $PLATFORM -c crc.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c dbl.c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lsqlite3 && \
-	gcc $1 $PLATFORM -c configl.c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lsqlite3 && \
-	gcc $1 $PLATFORM -c gpio.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c timef.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c udp.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c util.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c pid.c $DEBUG_PARAM && \
-	gcc $1 $PLATFORM -c regpidonfhc.c $DEBUG_PARAM && \
+	gcc $1  -c app.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
+	gcc $1  -c crc.c $DEBUG_PARAM && \
+	gcc $1  -c dbl.c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lsqlite3 && \
+	gcc $1  -c configl.c -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lsqlite3 && \
+	gcc $1  -c gpio.c $DEBUG_PARAM && \
+	gcc $1  -c timef.c $DEBUG_PARAM && \
+	gcc   -c udp.c $DEBUG_PARAM && \
+	gcc $1  -c util.c $DEBUG_PARAM && \
+	gcc $1  -c pid.c $DEBUG_PARAM && \
+	gcc $1  -c regpidonfhc.c $DEBUG_PARAM && \
 	cd acp && \
-	gcc $1 $PLATFORM -c main.c $DEBUG_PARAM && \
+	gcc   -c main.c $DEBUG_PARAM && \
 	cd ../ && \
 	echo "library: making archive..." && \
 	rm -f libpac.a
@@ -76,7 +75,7 @@ function build {
 	cd lib && \
 	build_lib $1 && \
 	cd ../ 
-	gcc -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $1 $3 $PLATFORM main.c -o $2 $DEBUG_PARAM -lpthread -lsqlite3 -L./lib -lpac && echo "Application successfully compiled. Launch command: sudo ./"$2
+	gcc -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $1 $3  main.c -o $2 $DEBUG_PARAM -lpthread -lsqlite3 -L./lib -lpac && echo "Application successfully compiled. Launch command: sudo ./"$2
 }
 
 function full {
