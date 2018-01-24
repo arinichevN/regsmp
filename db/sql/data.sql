@@ -33,6 +33,7 @@ CREATE TABLE "prog"
   "cooler_ki" REAL NOT NULL,
   "cooler_kd" REAL NOT NULL,
 
+  "save" INTEGER NOT NULL,
   "enable" INTEGER NOT NULL,
   "load" INTEGER NOT NULL
 );
