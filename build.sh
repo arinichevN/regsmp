@@ -5,9 +5,9 @@ APP_DBG=`printf "%s_dbg" "$APP"`
 INST_DIR=/usr/sbin
 CONF_DIR=/etc/controller
 CONF_DIR_APP=$CONF_DIR/$APP
-PID_DIR=/var/run
 
-DEBUG_PARAM="-Wall -pedantic"
+#DEBUG_PARAM="-Wall -pedantic"
+DEBUG_PARAM="-Wall -pedantic -g"
 MODE_DEBUG=-DMODE_DEBUG
 MODE_FULL=-DMODE_FULL
 
@@ -42,7 +42,7 @@ function move_conf {
 
 #your application will run on OS startup
 function conf_autostart {
-	cp -v starter_init /etc/init.d/$APP && \
+	cp -v init.sh /etc/init.d/$APP && \
 	chmod 755 /etc/init.d/$APP && \
 	update-rc.d -f $APP remove && \
 	update-rc.d $APP defaults 30 && \
@@ -56,7 +56,7 @@ function build_lib {
 	gcc $1  -c configl.c -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lpthread -lsqlite3 && \
 	gcc $1  -c gpio.c -D_REENTRANT $DEBUG_PARAM  -lpthread && \
 	gcc $1  -c timef.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc   -c udp.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
+	gcc $1  -c udp.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
 	gcc $1  -c util.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
 	gcc $1  -c pid.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
 	gcc $1  -c regpidonfhc.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
@@ -93,19 +93,16 @@ function full_nc {
 function part_debug {
 	build $MODE_DEBUG $APP_DBG $NONE
 }
-function uninstall {
-	pkill -F $PID_DIR/$APP.pid --signal 9
-	update-rc.d -f $APP remove
+function uninstall_nc {
+	pkill $APP --signal 9
+	pkill $APP_DBG --signal 9
 	rm -f $INST_DIR/$APP
 	rm -f $INST_DIR/$APP_DBG
+}
+function uninstall {
+	uninstall_nc
+	update-rc.d -f $APP remove
 	rm -rf $CONF_DIR_APP
 }
-function uninstall_nc {
-	pkill -F $PID_DIR/$APP.pid --signal 9
-	rm -f $INST_DIR/$APP
-	rm -f $INST_DIR/$APP_DBG
-}
-
-
 f=$1
 ${f}

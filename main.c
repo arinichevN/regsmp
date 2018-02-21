@@ -11,12 +11,7 @@ int sock_fd = -1;
 
 Peer peer_client = {.fd = &sock_fd, .addr_size = sizeof peer_client.addr};
 struct timespec cycle_duration = {0, 0};
-Mutex progl_mutex = {.created = 0, .attr_initialized = 0};
-
-I1List i1l;
-I2List i2l;
-I1S1List i1s1l;
-I1F1List i1f1l;
+Mutex progl_mutex = MUTEX_INITIALIZER;
 
 PeerList peer_list;
 SensorFTSList sensor_list;
@@ -27,14 +22,10 @@ ProgList prog_list = {NULL, NULL, 0};
 #include "db.c"
 
 int readSettings() {
-#ifdef MODE_DEBUG
-    printf("readSettings: configuration file to read: %s\n", CONFIG_FILE);
-#endif
+    printdo("configuration file to read: %s\n", CONFIG_FILE);
     FILE* stream = fopen(CONFIG_FILE, "r");
     if (stream == NULL) {
-#ifdef MODE_DEBUG
-        perror("readSettings()");
-#endif
+        perrorl("fopen()");
         return 0;
     }
     skipLine(stream);
@@ -48,15 +39,11 @@ int readSettings() {
             );
     if (n != 5) {
         fclose(stream);
-#ifdef MODE_DEBUG
-        fputs("ERROR: readSettings: bad format\n", stderr);
-#endif
+        putsel("bad format\n");
         return 0;
     }
     fclose(stream);
-#ifdef MODE_DEBUG
-    printf("readSettings: \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
-#endif
+    printdo("%s(): \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n",__func__, sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
     return 1;
 }
 
@@ -73,81 +60,23 @@ void initApp() {
 }
 
 int initData() {
-    if (!initI1List(&i1l, ACP_BUFFER_MAX_SIZE)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for i1l\n", stderr);
-#endif
-        return 0;
-    }
-    if (!initI1F1List(&i1f1l, ACP_BUFFER_MAX_SIZE)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for i1f1l\n", stderr);
-#endif
-        FREE_LIST(&i1l);
-        return 0;
-    }
-    if (!initI2List(&i2l, ACP_BUFFER_MAX_SIZE)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for i2l\n", stderr);
-#endif
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
-        return 0;
-    }
-    if (!initI1S1List(&i1s1l, ACP_BUFFER_MAX_SIZE)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for i1s1l\n", stderr);
-#endif
-        FREE_LIST(&i2l);
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
-        return 0;
-    }
     if (!config_getPeerList(&peer_list, NULL, db_public_path)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for peer_list\n", stderr);
-#endif
-        FREE_LIST(&i1s1l);
-        FREE_LIST(&i2l);
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
         return 0;
     }
     if (!config_getSensorFTSList(&sensor_list, &peer_list, db_data_path)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for em_list\n", stderr);
-#endif
-        FREE_LIST(&peer_list);
-        FREE_LIST(&i1s1l);
-        FREE_LIST(&i2l);
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
+        freePeerList(&peer_list);
         return 0;
     }
     if (!config_getEMList(&em_list, &peer_list, db_data_path)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to allocate memory for em_list\n", stderr);
-#endif
         FREE_LIST(&sensor_list);
-        FREE_LIST(&peer_list);
-        FREE_LIST(&i1s1l);
-        FREE_LIST(&i2l);
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
+        freePeerList(&peer_list);
         return 0;
     }
     if (!loadActiveProg(&prog_list, &em_list, &sensor_list, db_data_path)) {
-#ifdef MODE_DEBUG
-        fputs("initData: ERROR: failed to load active programs\n", stderr);
-#endif
         freeProgList(&prog_list);
         FREE_LIST(&em_list);
         FREE_LIST(&sensor_list);
-        FREE_LIST(&peer_list);
-        FREE_LIST(&i1s1l);
-        FREE_LIST(&i2l);
-        FREE_LIST(&i1f1l);
-        FREE_LIST(&i1l);
+        freePeerList(&peer_list);
         return 0;
     }
     return 1;
@@ -160,7 +89,10 @@ int initData() {
 void serverRun(int *state, int init_state) {
     SERVER_HEADER
     SERVER_APP_ACTIONS
-
+    DEF_SERVER_I1LIST
+    DEF_SERVER_I2LIST
+    DEF_SERVER_I1F1LIST
+    DEF_SERVER_I1S1LIST
     if (ACP_CMD_IS(ACP_CMD_PROG_STOP)) {
         PARSE_I1LIST
         for (int i = 0; i < i1l.length; i++) {
@@ -368,6 +300,7 @@ void serverRun(int *state, int init_state) {
             if (item != NULL) {
                 if (lockMutex(&item->mutex)) {
                     regpidonfhc_setGoal(&item->reg, i1f1l.item[i].p1);
+                    regpidonfhc_secureOutTouch(&item->reg);
                     if (item->save)db_saveTableFieldFloat("prog", "goal", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path);
                     unlockMutex(&item->mutex);
                 }
@@ -497,9 +430,8 @@ void cleanup_handler(void *arg) {
 
 void *threadFunction(void *arg) {
     Prog *item = arg;
-#ifdef MODE_DEBUG
-    printf("thread for program with id=%d has been started\n", item->id);
-#endif
+    printdo("thread for program with id=%d has been started\n", item->id);
+
 #ifdef MODE_DEBUG
     pthread_cleanup_push(cleanup_handler, item);
 #endif
@@ -526,14 +458,8 @@ void freeData() {
     freeProgList(&prog_list);
     FREE_LIST(&em_list);
     FREE_LIST(&sensor_list);
-    FREE_LIST(&peer_list);
-    FREE_LIST(&i1s1l);
-    FREE_LIST(&i2l);
-    FREE_LIST(&i1f1l);
-    FREE_LIST(&i1l);
-#ifdef MODE_DEBUG
-    puts("freeData: done");
-#endif
+    freePeerList(&peer_list);
+    putsdo("freeData: done\n");
 }
 
 void freeApp() {
@@ -559,23 +485,17 @@ void exit_nicely_e(char *s) {
 }
 
 int main(int argc, char** argv) {
-    if (geteuid() != 0) {
-#ifdef MODE_DEBUG
-        fprintf(stderr, "%s: root user expected\n", APP_NAME_STR);
-#endif
-        return (EXIT_FAILURE);
-    }
 #ifndef MODE_DEBUG
     daemon(0, 0);
 #endif
     conSig(&exit_nicely);
     if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1) {
-        perror("main: memory locking failed");
+        perrorl("mlockall()");
     }
     int data_initialized = 0;
     while (1) {
 #ifdef MODE_DEBUG
-        printf("main(): %s %d\n", getAppState(app_state), data_initialized);
+        printf("%s(): %s %d\n", F,getAppState(app_state), data_initialized);
 #endif
         switch (app_state) {
             case APP_INIT:

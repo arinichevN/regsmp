@@ -33,7 +33,16 @@ CREATE TABLE "prog"
   "cooler_ki" REAL NOT NULL,
   "cooler_kd" REAL NOT NULL,
 
+  "secure_id" INTEGER NOT NULL,
   "save" INTEGER NOT NULL,
   "enable" INTEGER NOT NULL,
   "load" INTEGER NOT NULL
+);
+
+CREATE TABLE "secure"
+(
+  "id" INTEGER PRIMARY KEY,
+  "timeout_sec" INTEGER NOT NULL, -- if secure_enable, we will set this pin to PWM mode with secure_duty_cycle after we have no requests to this pin while secure_timeout_sec is running
+  "heater_duty_cycle" INTEGER NOT NULL, -- 0...rsl
+  "cooler_duty_cycle" INTEGER NOT NULL -- 0...rsl
 );
