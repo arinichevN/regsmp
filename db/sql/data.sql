@@ -34,6 +34,8 @@ CREATE TABLE "prog"
   "cooler_kd" REAL NOT NULL,
 
   "secure_id" INTEGER NOT NULL,
+  "green_light_sensor_id" INTEGER NOT NULL,--regulator initialization will be completed only when this sensor value is equal to green_value (use it when you want your regulator to do work when your hard and software are ready)
+  "green_value" REAL NOT NULL,
   "save" INTEGER NOT NULL,
   "enable" INTEGER NOT NULL,
   "load" INTEGER NOT NULL

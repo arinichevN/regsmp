@@ -13,10 +13,10 @@ Peer peer_client = {.fd = &sock_fd, .addr_size = sizeof peer_client.addr};
 struct timespec cycle_duration = {0, 0};
 Mutex progl_mutex = MUTEX_INITIALIZER;
 
-PeerList peer_list;
-SensorFTSList sensor_list;
-EMList em_list;
-ProgList prog_list = {NULL, NULL, 0};
+PeerList peer_list = LIST_INITIALIZER;
+SensorFTSList sensor_list = LIST_INITIALIZER;
+EMList em_list = LIST_INITIALIZER;
+ProgList prog_list = LLIST_INITIALIZER;
 
 #include "util.c"
 #include "db.c"
@@ -43,7 +43,7 @@ int readSettings() {
         return 0;
     }
     fclose(stream);
-    printdo("%s(): \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n",__func__, sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
+    printdo("%s(): \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", __func__, sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
     return 1;
 }
 
@@ -495,7 +495,7 @@ int main(int argc, char** argv) {
     int data_initialized = 0;
     while (1) {
 #ifdef MODE_DEBUG
-        printf("%s(): %s %d\n", F,getAppState(app_state), data_initialized);
+        printf("%s(): %s %d\n", F, getAppState(app_state), data_initialized);
 #endif
         switch (app_state) {
             case APP_INIT:

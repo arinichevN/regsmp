@@ -101,6 +101,18 @@ int getProg_callback(void *d, int argc, char **argv, char **azColName) {
                 item->reg.secure_out.active = 0;
             }
             c++;
+        } else if (DB_COLUMN_IS("green_light_sensor_id")) {
+            SensorFTS *sensor = getSensorFTSById(atoi(argv[i]), data->sensor_list);
+            if (sensor == NULL) {
+                item->reg.green_light.active = 0;
+            } else {
+                item->reg.green_light.sensor = *sensor;
+                item->reg.green_light.active = 1;
+            }
+            c++;
+        } else if (DB_COLUMN_IS("green_value")) {
+            item->reg.green_light.green_value = atof(argv[i]);
+            c++;
         } else if (DB_COLUMN_IS("save")) {
             item->save = atoi(argv[i]);
             c++;
@@ -112,16 +124,16 @@ int getProg_callback(void *d, int argc, char **argv, char **azColName) {
             c++;
         } else {
 #ifdef MODE_DEBUG
-            fprintf(stderr, "%s(): unknown column\n", F);
+            fprintf(stderr, "%s(): unknown column: %s\n", F, DB_COLUMN_NAME);
 #endif
 
         }
     }
-#define N 21
+#define N 23
     if (c != N) {
-        #ifdef MODE_DEBUG
+#ifdef MODE_DEBUG
         fprintf(stderr, "%s(): required %d columns but %d found\n", F, N, c);
-        #endif
+#endif
         return EXIT_FAILURE;
     }
 #undef N
@@ -155,7 +167,7 @@ int getProgByIdFDB(int prog_id, Prog *item, EMList *em_list, SensorFTSList *sens
     }
     char q[LINE_SIZE];
     ProgData data = {.em_list = em_list, .sensor_list = sensor_list, .prog = item, .db_data = db};
-    snprintf(q, sizeof q, "select " PROG_FIELDS " from prog where id=%d", prog_id);
+    snprintf(q, sizeof q, "select * from prog where id=%d", prog_id);
     if (!db_exec(db, q, getProg_callback, &data)) {
 #ifdef MODE_DEBUG
         fprintf(stderr, "%s(): query failed\n", F);
