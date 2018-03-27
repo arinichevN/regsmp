@@ -238,6 +238,7 @@ int addProgById(int prog_id, ProgList *list, EMList *em_list, SensorFTSList *sen
         return 0;
     }
     item->reg.sensor.peer.fd = &item->sock_fd;
+    item->reg.green_light.sensor.peer.fd = &item->sock_fd;
     item->reg.heater.em.peer.fd = &item->sock_fd;
     item->reg.cooler.em.peer.fd = &item->sock_fd;
     if (!checkProg(item)) {
