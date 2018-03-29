@@ -3,8 +3,8 @@
 
 int app_state = APP_INIT;
 
-char db_data_path[LINE_SIZE];
-char db_public_path[LINE_SIZE];
+TSVresult config_tsv = TSVRESULT_INITIALIZER;
+char * db_data_path;
 
 int sock_port = -1;
 int sock_fd = -1;
@@ -21,34 +21,26 @@ ProgList prog_list = LLIST_INITIALIZER;
 #include "util.c"
 #include "db.c"
 
-int readSettings() {
-    printdo("configuration file to read: %s\n", CONFIG_FILE);
-    FILE* stream = fopen(CONFIG_FILE, "r");
-    if (stream == NULL) {
-        perrorl("fopen()");
+int readSettings(TSVresult* r, const char *data_path, int *port, struct timespec *cd, char **db_data_path) {
+    if (!TSVinit(r, data_path)) {
         return 0;
     }
-    skipLine(stream);
-    int n;
-    n = fscanf(stream, "%d\t%ld\t%ld\t%255s\t%255s\n",
-            &sock_port,
-            &cycle_duration.tv_sec,
-            &cycle_duration.tv_nsec,
-            db_data_path,
-            db_public_path
-            );
-    if (n != 5) {
-        fclose(stream);
-        putsel("bad format\n");
+    int _port = TSVgetis(r, 0, "port");
+    int _cd_sec = TSVgetis(r, 0, "cd_sec");
+    int _cd_nsec = TSVgetis(r, 0, "cd_nsec");
+    char *_db_data_path = TSVgetvalues(r, 0, "db_data_path");
+    if (TSVnullreturned(r)) {
         return 0;
     }
-    fclose(stream);
-    printdo("%s(): \n\tsock_port: %d, \n\tcycle_duration: %ld sec %ld nsec, \n\tdb_data_path: %s, \n\tdb_public_path: %s\n", __func__, sock_port, cycle_duration.tv_sec, cycle_duration.tv_nsec, db_data_path, db_public_path);
+    *port = _port;
+    cd->tv_sec = _cd_sec;
+    cd->tv_nsec = _cd_nsec;
+    *db_data_path = _db_data_path;
     return 1;
 }
 
 void initApp() {
-    if (!readSettings()) {
+    if (!readSettings(&config_tsv, CONFIG_FILE, &sock_port, &cycle_duration, &db_data_path)) {
         exit_nicely_e("initApp: failed to read settings\n");
     }
     if (!initMutex(&progl_mutex)) {
@@ -60,7 +52,7 @@ void initApp() {
 }
 
 int initData() {
-    if (!config_getPeerList(&peer_list, NULL, db_public_path)) {
+    if (!config_getPeerList(&peer_list, NULL, db_data_path)) {
         return 0;
     }
     if (!config_getSensorFTSList(&sensor_list, &peer_list, db_data_path)) {
@@ -466,6 +458,7 @@ void freeApp() {
     freeData();
     freeSocketFd(&sock_fd);
     freeMutex(&progl_mutex);
+    TSVclear(&config_tsv);
 }
 
 void exit_nicely() {

@@ -11,6 +11,7 @@
 #include "lib/configl.h"
 #include "lib/timef.h"
 #include "lib/udp.h"
+#include "lib/tsv.h"
 #include "lib/regpidonfhc.h"
 #include "lib/acp/main.h"
 #include "lib/acp/app.h"
