@@ -27,6 +27,16 @@
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 
+#define GOOD_FLOAT 1.0
+#define BAD_FLOAT 0.0
+#define GOOD_INT 1
+#define BAD_INT 0
+
+#define POSITIVE_FLOAT GOOD_FLOAT
+#define NEGATIVE_FLOAT BAD_FLOAT
+#define POSITIVE_INT GOOD_INT
+#define NEGATIVE_INT BAD_INT
+
 #define DEF_THREAD pthread_t thread;char thread_cmd=0;void *threadFunction(void *arg);
 #define THREAD_CREATE createThread(&thread,&threadFunction,&thread_cmd)
 #define THREAD_STOP thread_cmd = 1;pthread_join(thread, NULL);
