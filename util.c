@@ -174,6 +174,12 @@ int bufCatProgInit(Prog *item, ACPResponse *response) {
     return 0;
 }
 
+int bufCatProgError(Prog *item, ACPResponse *response) {
+    char q[LINE_SIZE];
+    snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR "%u" ACP_DELIMITER_ROW_STR, item->id, item->error_code);
+    return acp_responseStrCat(response, q);
+}
+
 int bufCatProgGoal(Prog *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
         char q[LINE_SIZE];
@@ -275,8 +281,8 @@ void printData(ACPResponse *response) {
     SEND_STR(q)
     PROG_LIST_LOOP_SP
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
-            
-                SEND_STR("+-----------------------------------------------+\n")
+
+    SEND_STR("+-----------------------------------------------+\n")
     SEND_STR("|              Prog green light                 |\n")
     SEND_STR("+-----------+-----------+-----------+-----------+\n")
     SEND_STR("|  prog_id  |   active  |   value   |green_value|\n")
@@ -375,6 +381,8 @@ void printHelp(ACPResponse *response) {
     snprintf(q, sizeof q, "%s\tsave data to database or not; program id and value (1 || 0) expected\n", ACP_CMD_PROG_SET_SAVE);
     SEND_STR(q)
     snprintf(q, sizeof q, "%s\tget prog goal; program id expected\n", ACP_CMD_REG_PROG_GET_GOAL);
+    SEND_STR(q)
+    snprintf(q, sizeof q, "%s\tget prog error code; program id expected\n", ACP_CMD_PROG_GET_ERROR);
     SEND_STR(q)
     snprintf(q, sizeof q, "%s\tget prog sensor value; program id expected\n", ACP_CMD_GET_FTS);
     SEND_STR(q)
