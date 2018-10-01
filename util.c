@@ -1,142 +1,57 @@
 
 #include "main.h"
 
-FUN_LLIST_GET_BY_ID(Prog)
 
-extern int getProgByIdFDB(int prog_id, Prog *item, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *dbl, const char *db_path);
+extern int getProgByIdFDB(int prog_id, Channel *item, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *dbl, const char *db_path);
 
-void stopProgThread(Prog *item) {
-#ifdef MODE_DEBUG
-    printf("signaling thread %d to cancel...\n", item->id);
-#endif
-    if (pthread_cancel(item->thread) != 0) {
-#ifdef MODE_DEBUG
-        perror("pthread_cancel()");
-#endif
-    }
-    void * result;
-#ifdef MODE_DEBUG
-    printf("joining thread %d...\n", item->id);
-#endif
-    if (pthread_join(item->thread, &result) != 0) {
-#ifdef MODE_DEBUG
-        perror("pthread_join()");
-#endif
-    }
-    if (result != PTHREAD_CANCELED) {
-#ifdef MODE_DEBUG
-        printf("thread %d not canceled\n", item->id);
-#endif
-    }
-}
-
-void stopAllProgThreads(ProgList * list) {
-    PROG_LIST_LOOP_ST
-#ifdef MODE_DEBUG
-            printf("signaling thread %d to cancel...\n", item->id);
-#endif
-    if (pthread_cancel(item->thread) != 0) {
-#ifdef MODE_DEBUG
-        perror("pthread_cancel()");
-#endif
-    }
-    PROG_LIST_LOOP_SP
-
-    PROG_LIST_LOOP_ST
-            void * result;
-#ifdef MODE_DEBUG
-    printf("joining thread %d...\n", item->id);
-#endif
-    if (pthread_join(item->thread, &result) != 0) {
-#ifdef MODE_DEBUG
-        perror("pthread_join()");
-#endif
-    }
-    if (result != PTHREAD_CANCELED) {
-#ifdef MODE_DEBUG
-        printf("thread %d not canceled\n", item->id);
-#endif
-    }
-    PROG_LIST_LOOP_SP
-}
-
-void freeProg(Prog*item) {
+void freeChannel(Channel*item) {
     freeSocketFd(&item->sock_fd);
     freeMutex(&item->mutex);
     free(item);
 }
 
-void freeProgList(ProgList *list) {
-    Prog *item = list->top, *temp;
+void freeChannelList(ChannelList *list) {
+    Channel *item = list->top, *temp;
     while (item != NULL) {
         temp = item;
         item = item->next;
-        freeProg(temp);
+        freeChannel(temp);
     }
     list->top = NULL;
     list->last = NULL;
     list->length = 0;
 }
 
-int checkProg(const Prog *item) {
+int checkProg(const Channel *item) {
     return 1;
 }
 
-int lockProgList() {
-    extern Mutex progl_mutex;
-    if (pthread_mutex_lock(&(progl_mutex.self)) != 0) {
-#ifdef MODE_DEBUG
-        perror("lockProgList: error locking mutex");
-#endif 
-        return 0;
-    }
-    return 1;
-}
-
-int tryLockProgList() {
-    extern Mutex progl_mutex;
-    if (pthread_mutex_trylock(&(progl_mutex.self)) != 0) {
-        return 0;
-    }
-    return 1;
-}
-
-int unlockProgList() {
-    extern Mutex progl_mutex;
-    if (pthread_mutex_unlock(&(progl_mutex.self)) != 0) {
-#ifdef MODE_DEBUG
-        perror("unlockProgList: error unlocking mutex (CMD_GET_ALL)");
-#endif 
-        return 0;
-    }
-    return 1;
-}
 
 void secure() {
-    PROG_LIST_LOOP_ST
-    regpidonfhc_turnOff(&item->reg);
-    PROG_LIST_LOOP_SP
+    FOREACH_CHANNEL{
+    regpidonfhc_turnOff(&item->prog);
+}
 }
 
-struct timespec getTimeRestChange(const Prog *item) {
-    return getTimeRestTmr(item->reg.change_gap, item->reg.tmr);
+struct timespec getTimeRestChange(const Channel *item) {
+    return getTimeRestTmr(item->prog.change_gap, item->prog.tmr);
 }
 
-int bufCatProgRuntime(Prog *item, ACPResponse *response) {
+int bufCatProgRuntime(Channel *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
         char q[LINE_SIZE];
-        char *state = reg_getStateStr(item->reg.state);
-        char *state_r = reg_getStateStr(item->reg.state_r);
+        char *state = reg_getStateStr(item->prog.state);
+        char *state_r = reg_getStateStr(item->prog.state_r);
         struct timespec tm_rest = getTimeRestChange(item);
         snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR "%s" ACP_DELIMITER_COLUMN_STR "%s" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR "%ld" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR "%d" ACP_DELIMITER_ROW_STR,
                 item->id,
                 state,
                 state_r,
-                item->reg.heater.output,
-                item->reg.cooler.output,
+                item->prog.heater.output,
+                item->prog.cooler.output,
                 tm_rest.tv_sec,
-                item->reg.sensor.value.value,
-                item->reg.sensor.value.state
+                item->prog.sensor.value.value,
+                item->prog.sensor.value.state
                 );
         unlockMutex(&item->mutex);
         return acp_responseStrCat(response, q);
@@ -144,29 +59,30 @@ int bufCatProgRuntime(Prog *item, ACPResponse *response) {
     return 0;
 }
 
-int bufCatProgInit(Prog *item, ACPResponse *response) {
+int bufCatProgInit(Channel *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
         char q[LINE_SIZE];
-        char *heater_mode = reg_getStateStr(item->reg.heater.mode);
-        char *cooler_mode = reg_getStateStr(item->reg.cooler.mode);
+        RegPIDOnfHC * data=(RegPIDOnfHC *) &item->prog;
+        char *heater_mode = reg_getStateStr(data->heater.mode);
+        char *cooler_mode = reg_getStateStr(data->cooler.mode);
         snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR "%ld" ACP_DELIMITER_COLUMN_STR "%s" ACP_DELIMITER_COLUMN_STR "%d" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR "%s" ACP_DELIMITER_COLUMN_STR "%d" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_ROW_STR,
                 item->id,
-                item->reg.goal,
-                item->reg.change_gap.tv_sec,
+                data->goal,
+                data->change_gap.tv_sec,
                 heater_mode,
-                item->reg.heater.use,
-                item->reg.heater.em.pwm_rsl,
-                item->reg.heater.delta,
-                item->reg.heater.pid.kp,
-                item->reg.heater.pid.ki,
-                item->reg.heater.pid.kd,
+                data->heater.use,
+                data->heater.em.pwm_rsl,
+                data->heater.delta,
+                data->heater.pid.kp,
+                data->heater.pid.ki,
+                data->heater.pid.kd,
                 cooler_mode,
-                item->reg.cooler.use,
-                item->reg.cooler.em.pwm_rsl,
-                item->reg.cooler.delta,
-                item->reg.cooler.pid.kp,
-                item->reg.cooler.pid.ki,
-                item->reg.cooler.pid.kd
+                data->cooler.use,
+                data->cooler.em.pwm_rsl,
+                data->cooler.delta,
+                data->cooler.pid.kp,
+                data->cooler.pid.ki,
+                data->cooler.pid.kd
                 );
         unlockMutex(&item->mutex);
         return acp_responseStrCat(response, q);
@@ -174,18 +90,19 @@ int bufCatProgInit(Prog *item, ACPResponse *response) {
     return 0;
 }
 
-int bufCatProgError(Prog *item, ACPResponse *response) {
+int bufCatProgError(Channel *item, ACPResponse *response) {
     char q[LINE_SIZE];
     snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR "%u" ACP_DELIMITER_ROW_STR, item->id, item->error_code);
     return acp_responseStrCat(response, q);
 }
 
-int bufCatProgGoal(Prog *item, ACPResponse *response) {
+int bufCatProgGoal(Channel *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
         char q[LINE_SIZE];
+         RegPIDOnfHC * data=(RegPIDOnfHC *) &item->prog;
         snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR FLOAT_NUM ACP_DELIMITER_ROW_STR,
                 item->id,
-                item->reg.goal
+                data->goal
                 );
         unlockMutex(&item->mutex);
         return acp_responseStrCat(response, q);
@@ -193,19 +110,21 @@ int bufCatProgGoal(Prog *item, ACPResponse *response) {
     return 0;
 }
 
-int bufCatProgFTS(Prog *item, ACPResponse *response) {
+int bufCatProgFTS(Channel *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
-        int r = acp_responseFTSCat(item->id, item->reg.sensor.value.value, item->reg.sensor.value.tm, item->reg.sensor.value.state, response);
+        RegPIDOnfHC * data=(RegPIDOnfHC *) &item->prog;
+        int r = acp_responseFTSCat(item->id, data->sensor.value.value, data->sensor.value.tm, data->sensor.value.state, response);
         unlockMutex(&item->mutex);
         return r;
     }
     return 0;
 }
 
-int bufCatProgEnabled(Prog *item, ACPResponse *response) {
+int bufCatProgEnabled(Channel *item, ACPResponse *response) {
     if (lockMutex(&item->mutex)) {
         char q[LINE_SIZE];
-        int enabled = regpidonfhc_getEnabled(&item->reg);
+        RegPIDOnfHC * data=(RegPIDOnfHC *) &item->prog;
+        int enabled = regpidonfhc_getEnabled(data);
         snprintf(q, sizeof q, "%d" ACP_DELIMITER_COLUMN_STR "%d" ACP_DELIMITER_ROW_STR,
                 item->id,
                 enabled
@@ -217,7 +136,7 @@ int bufCatProgEnabled(Prog *item, ACPResponse *response) {
 }
 
 void printData(ACPResponse *response) {
-    ProgList *list = &prog_list;
+    ChannelList *list = &channel_list;
     char q[LINE_SIZE];
     snprintf(q, sizeof q, "CONFIG_FILE: %s\n", CONFIG_FILE);
     SEND_STR(q)
@@ -241,27 +160,27 @@ void printData(ACPResponse *response) {
     SEND_STR("|    id     |    goal   |  delta_h  |  delta_c  | change_gap|change_rest|   state   |  state_r  | state_onf | out_heater| out_cooler| error_code|\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
 
-    PROG_LIST_LOOP_ST
-            char *state = reg_getStateStr(item->reg.state);
-    char *state_r = reg_getStateStr(item->reg.state_r);
-    char *state_onf = reg_getStateStr(item->reg.state_onf);
+    FOREACH_CHANNEL{
+            char *state = reg_getStateStr(item->prog.state);
+    char *state_r = reg_getStateStr(item->prog.state_r);
+    char *state_onf = reg_getStateStr(item->prog.state_onf);
     struct timespec tm1 = getTimeRestChange(item);
     snprintf(q, sizeof q, "|%11d|%11.3f|%11.3f|%11.3f|%11ld|%11ld|%11s|%11s|%11s|%11.3f|%11.3f|%11u|\n",
             item->id,
-            item->reg.goal,
-            item->reg.heater.delta,
-            item->reg.cooler.delta,
-            item->reg.change_gap.tv_sec,
+            item->prog.goal,
+            item->prog.heater.delta,
+            item->prog.cooler.delta,
+            item->prog.change_gap.tv_sec,
             tm1.tv_sec,
             state,
             state_r,
             state_onf,
-            item->reg.heater.output,
-            item->reg.cooler.output,
+            item->prog.heater.output,
+            item->prog.cooler.output,
             item->error_code
             );
     SEND_STR(q)
-    PROG_LIST_LOOP_SP
+}
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
 
     SEND_STR("+-----------------------------------------------------------------------------------+\n")
@@ -269,18 +188,18 @@ void printData(ACPResponse *response) {
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
     SEND_STR("|  prog_id  | secure_id | timeout_s |heater_out |cooler_out |  active   |   done    |\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
-    PROG_LIST_LOOP_ST
+    FOREACH_CHANNEL{
     snprintf(q, sizeof q, "|%11d|%11d|%11ld|%11.3f|%11.3f|%11d|%11d|\n",
             item->id,
-            item->reg.secure_out.id,
-            item->reg.secure_out.timeout.tv_sec,
-            item->reg.secure_out.heater_duty_cycle,
-            item->reg.secure_out.cooler_duty_cycle,
-            item->reg.secure_out.active,
-            item->reg.secure_out.done
+            item->prog.secure_out.id,
+            item->prog.secure_out.timeout.tv_sec,
+            item->prog.secure_out.heater_duty_cycle,
+            item->prog.secure_out.cooler_duty_cycle,
+            item->prog.secure_out.active,
+            item->prog.secure_out.done
             );
     SEND_STR(q)
-    PROG_LIST_LOOP_SP
+}
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
 
     SEND_STR("+-----------------------------------------------+\n")
@@ -288,15 +207,15 @@ void printData(ACPResponse *response) {
     SEND_STR("+-----------+-----------+-----------+-----------+\n")
     SEND_STR("|  prog_id  |   active  |   value   |green_value|\n")
     SEND_STR("+-----------+-----------+-----------+-----------+\n")
-    PROG_LIST_LOOP_ST
+    FOREACH_CHANNEL{
     snprintf(q, sizeof q, "|%11d|%11d|%11.3f|%11.3f|\n",
             item->id,
-            item->reg.green_light.active,
-            item->reg.green_light.sensor.value.value,
-            item->reg.green_light.green_value
+            item->prog.green_light.active,
+            item->prog.green_light.sensor.value.value,
+            item->prog.green_light.green_value
             );
     SEND_STR(q)
-    PROG_LIST_LOOP_SP
+}
     SEND_STR("+-----------+-----------+-----------+-----------+\n")
 
     acp_sendPeerListInfo(&peer_list, response, &peer_client);
@@ -308,22 +227,22 @@ void printData(ACPResponse *response) {
     SEND_STR("+           +-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
     SEND_STR("|  prog_id  |     id    | remote_id |  pwm_rsl  |  peer_id  |     id    | remote_id |  pwm_rsl  |  peer_id  |\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
-    PROG_LIST_LOOP_ST
+        FOREACH_CHANNEL{
     snprintf(q, sizeof q, "|%11d|%11d|%11d|%11.3f|%11s|%11d|%11d|%11.3f|%11s|\n",
             item->id,
 
-            item->reg.heater.em.id,
-            item->reg.heater.em.remote_id,
-            item->reg.heater.em.pwm_rsl,
-            item->reg.heater.em.peer.id,
+            item->prog.heater.em.id,
+            item->prog.heater.em.remote_id,
+            item->prog.heater.em.pwm_rsl,
+            item->prog.heater.em.peer.id,
 
-            item->reg.cooler.em.id,
-            item->reg.cooler.em.remote_id,
-            item->reg.cooler.em.pwm_rsl,
-            item->reg.cooler.em.peer.id
+            item->prog.cooler.em.id,
+            item->prog.cooler.em.remote_id,
+            item->prog.cooler.em.pwm_rsl,
+            item->prog.cooler.em.peer.id
             );
     SEND_STR(q)
-    PROG_LIST_LOOP_SP
+}
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+-----------+\n")
 
     SEND_STR("+-----------+------------------------------------------------------------------------------+\n")
@@ -333,19 +252,19 @@ void printData(ACPResponse *response) {
     SEND_STR("|           |           |           |           |-----------+-----------+-----------+------+\n")
     SEND_STR("|    id     |    id     | remote_id |  peer_id  |   value   |    sec    |   nsec    | state|\n")
     SEND_STR("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n")
-    PROG_LIST_LOOP_ST
+    FOREACH_CHANNEL{
     snprintf(q, sizeof q, "|%11d|%11d|%11d|%11s|%11.3f|%11ld|%11ld|%6d|\n",
             item->id,
-            item->reg.sensor.id,
-            item->reg.sensor.remote_id,
-            item->reg.sensor.peer.id,
-            item->reg.sensor.value.value,
-            item->reg.sensor.value.tm.tv_sec,
-            item->reg.sensor.value.tm.tv_nsec,
-            item->reg.sensor.value.state
+            item->prog.sensor.id,
+            item->prog.sensor.remote_id,
+            item->prog.sensor.peer.id,
+            item->prog.sensor.value.value,
+            item->prog.sensor.value.tm.tv_sec,
+            item->prog.sensor.value.tm.tv_nsec,
+            item->prog.sensor.value.state
             );
     SEND_STR(q)
-    PROG_LIST_LOOP_SP
+}
     SEND_STR_L("+-----------+-----------+-----------+-----------+-----------+-----------+-----------+------+\n")
 
 }

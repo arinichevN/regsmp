@@ -37,13 +37,9 @@
 
 #define FLOAT_NUM "%.2f"
 
-#define PROG_LIST_LOOP_ST {Prog *item = prog_list.top; while (item != NULL) {
-#define PROG_LIST_LOOP_SP item = item->next; } item = prog_list.top;}
-
-
-struct prog_st {
+struct channel_st {
     int id;
-    RegPIDOnfHC reg;
+    RegPIDOnfHC prog;
     int save;
     uint32_t error_code;
     
@@ -51,20 +47,21 @@ struct prog_st {
     struct timespec cycle_duration;
     pthread_t thread;
     Mutex mutex;
-    struct prog_st *next;
+    struct channel_st *next;
 };
 
-typedef struct prog_st Prog;
+typedef struct channel_st Channel;
 
-DEC_LLIST(Prog)
+DEC_LLIST(Channel)
 
 typedef struct {
     sqlite3 *db_data;
     EMList *em_list;
     SensorFTSList *sensor_list;
-    Prog *prog;
-    ProgList *prog_list;
-} ProgData;
+    Channel *channel;
+    ChannelList *channel_list;
+    Mutex * channel_list_mutex;
+} ChannelData;
 
 extern int readSettings() ;
 
@@ -74,7 +71,7 @@ extern int initData() ;
 
 extern void serverRun(int *state, int init_state) ;
 
-extern void progControl(Prog *item) ;
+extern void progControl(Channel *item) ;
 
 extern void *threadFunction(void *arg) ;
 

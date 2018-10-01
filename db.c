@@ -2,125 +2,129 @@
 #include "main.h"
 
 int getProg_callback(void *d, int argc, char **argv, char **azColName) {
-    ProgData * data = d;
-    Prog *item = data->prog;
+    ChannelData * data = d;
+    Channel *item = data->channel;
     int load = 0, enable = 0;
 
     int c = 0;
-    for (int i = 0; i < argc; i++) {
+    DB_FOREACH_COLUMN {
         if (DB_COLUMN_IS("id")) {
-            item->id = atoi(argv[i]);
+            item->id = DB_CVI;
             c++;
         } else if (DB_COLUMN_IS("sensor_id")) {
-            SensorFTS *sensor = getSensorFTSById(atoi(argv[i]), data->sensor_list);
+            SensorFTS *sensor;
+            LIST_GETBYID(sensor, data->sensor_list, DB_CVI)
             if (sensor == NULL) {
                 return EXIT_FAILURE;
             }
-            item->reg.sensor = *sensor;
+            item->prog.sensor = *sensor;
             c++;
         } else if (DB_COLUMN_IS("heater_em_id")) {
-            EM *em = getEMById(atoi(argv[i]), data->em_list);
+            EM *em;
+            LIST_GETBYID(em, data->em_list, DB_CVI)
             if (em == NULL) {
                 return EXIT_FAILURE;
             }
-            item->reg.heater.em = *em;
+            item->prog.heater.em = *em;
             c++;
         } else if (DB_COLUMN_IS("cooler_em_id")) {
-            EM *em = getEMById(atoi(argv[i]), data->em_list);
+            EM *em;
+            LIST_GETBYID(em, data->em_list, DB_CVI)
             if (em == NULL) {
                 return EXIT_FAILURE;
             }
-            item->reg.cooler.em = *em;
+            item->prog.cooler.em = *em;
             c++;
         } else if (DB_COLUMN_IS("em_mode")) {
-            if (strcmp(REG_EM_MODE_COOLER_STR, argv[i]) == 0) {
-                item->reg.cooler.use = 1;
-                item->reg.heater.use = 0;
-            } else if (strcmp(REG_EM_MODE_HEATER_STR, argv[i]) == 0) {
-                item->reg.cooler.use = 0;
-                item->reg.heater.use = 1;
-            } else if (strcmp(REG_EM_MODE_BOTH_STR, argv[i]) == 0) {
-                item->reg.cooler.use = 1;
-                item->reg.heater.use = 1;
+            if (strcmp(REG_EM_MODE_COOLER_STR, DB_COLUMN_VALUE) == 0) {
+                item->prog.cooler.use = 1;
+                item->prog.heater.use = 0;
+            } else if (strcmp(REG_EM_MODE_HEATER_STR, DB_COLUMN_VALUE) == 0) {
+                item->prog.cooler.use = 0;
+                item->prog.heater.use = 1;
+            } else if (strcmp(REG_EM_MODE_BOTH_STR, DB_COLUMN_VALUE) == 0) {
+                item->prog.cooler.use = 1;
+                item->prog.heater.use = 1;
             } else {
-                item->reg.cooler.use = 0;
-                item->reg.heater.use = 0;
+                item->prog.cooler.use = 0;
+                item->prog.heater.use = 0;
             }
             c++;
         } else if (DB_COLUMN_IS("heater_mode")) {
-            if (strncmp(argv[i], REG_MODE_PID_STR, 3) == 0) {
-                item->reg.heater.mode = REG_MODE_PID;
-            } else if (strncmp(argv[i], REG_MODE_ONF_STR, 3) == 0) {
-                item->reg.heater.mode = REG_MODE_ONF;
+            if (strncmp(DB_COLUMN_VALUE, REG_MODE_PID_STR, 3) == 0) {
+                item->prog.heater.mode = REG_MODE_PID;
+            } else if (strncmp(DB_COLUMN_VALUE, REG_MODE_ONF_STR, 3) == 0) {
+                item->prog.heater.mode = REG_MODE_ONF;
             } else {
-                item->reg.heater.mode = REG_OFF;
+                item->prog.heater.mode = REG_OFF;
             }
             c++;
         } else if (DB_COLUMN_IS("cooler_mode")) {
-            if (strncmp(argv[i], REG_MODE_PID_STR, 3) == 0) {
-                item->reg.cooler.mode = REG_MODE_PID;
-            } else if (strncmp(argv[i], REG_MODE_ONF_STR, 3) == 0) {
-                item->reg.cooler.mode = REG_MODE_ONF;
+            if (strncmp(DB_COLUMN_VALUE, REG_MODE_PID_STR, 3) == 0) {
+                item->prog.cooler.mode = REG_MODE_PID;
+            } else if (strncmp(DB_COLUMN_VALUE, REG_MODE_ONF_STR, 3) == 0) {
+                item->prog.cooler.mode = REG_MODE_ONF;
             } else {
-                item->reg.cooler.mode = REG_OFF;
+                item->prog.cooler.mode = REG_OFF;
             }
             c++;
         } else if (DB_COLUMN_IS("goal")) {
-            item->reg.goal = atof(argv[i]);
+            item->prog.goal = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("heater_delta")) {
-            item->reg.heater.delta = atof(argv[i]);
+            item->prog.heater.delta = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("heater_kp")) {
-            item->reg.heater.pid.kp = atof(argv[i]);
+            item->prog.heater.pid.kp = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("heater_ki")) {
-            item->reg.heater.pid.ki = atof(argv[i]);
+            item->prog.heater.pid.ki = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("heater_kd")) {
-            item->reg.heater.pid.kd = atof(argv[i]);
+            item->prog.heater.pid.kd = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("cooler_kp")) {
-            item->reg.cooler.pid.kp = atof(argv[i]);
+            item->prog.cooler.pid.kp = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("cooler_ki")) {
-            item->reg.cooler.pid.ki = atof(argv[i]);
+            item->prog.cooler.pid.ki = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("cooler_kd")) {
-            item->reg.cooler.pid.kd = atof(argv[i]);
+            item->prog.cooler.pid.kd = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("cooler_delta")) {
-            item->reg.cooler.delta = atof(argv[i]);
+            item->prog.cooler.delta = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("change_gap")) {
-            item->reg.change_gap.tv_nsec = 0;
-            item->reg.change_gap.tv_sec = atoi(argv[i]);
+            item->prog.change_gap.tv_nsec = 0;
+            item->prog.change_gap.tv_sec = DB_CVI;
             c++;
         } else if (DB_COLUMN_IS("secure_id")) {
-            if (!reg_getSecureFDB(&item->reg.secure_out, atoi(argv[i]), data->db_data, NULL)) {
-                item->reg.secure_out.active = 0;
+            if (!reg_getSecureFDB(&item->prog.secure_out, DB_CVI, data->db_data, NULL)) {
+                item->prog.secure_out.active = 0;
             }
             c++;
         } else if (DB_COLUMN_IS("green_light_sensor_id")) {
-            SensorFTS *sensor = getSensorFTSById(atoi(argv[i]), data->sensor_list);
+            SensorFTS *sensor;
+            LIST_GETBYID(sensor, data->sensor_list, DB_CVI)
             if (sensor == NULL) {
-                item->reg.green_light.active = 0;
+                item->prog.green_light.active = 0;
             } else {
-                item->reg.green_light.sensor = *sensor;
-                item->reg.green_light.active = 1;
+                item->prog.green_light.sensor = *sensor;
+                item->prog.green_light.active = 1;
             }
             c++;
         } else if (DB_COLUMN_IS("green_value")) {
-            item->reg.green_light.green_value = atof(argv[i]);
+            item->prog.green_light.green_value = DB_CVF;
             c++;
         } else if (DB_COLUMN_IS("save")) {
-            item->save = atoi(argv[i]);
+            item->save = DB_CVI;
             c++;
         } else if (DB_COLUMN_IS("enable")) {
-            enable = atoi(argv[i]);
+            enable = DB_CVI;
             c++;
         } else if (DB_COLUMN_IS("load")) {
-            load = atoi(argv[i]);
+            load = DB_CVI;
             c++;
         } else {
 #ifdef MODE_DEBUG
@@ -137,9 +141,9 @@ int getProg_callback(void *d, int argc, char **argv, char **azColName) {
     }
 #undef N
     if (enable) {
-        regpidonfhc_enable(&item->reg);
+        regpidonfhc_enable(&item->prog);
     } else {
-        regpidonfhc_disable(&item->reg);
+        regpidonfhc_disable(&item->prog);
     }
     if (!load) {
         db_saveTableFieldInt("prog", "load", item->id, 1, data->db_data, NULL);
@@ -147,7 +151,7 @@ int getProg_callback(void *d, int argc, char **argv, char **azColName) {
     return EXIT_SUCCESS;
 }
 
-int getProgByIdFDB(int prog_id, Prog *item, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *dbl, const char *db_path) {
+int getProgByIdFDB(int prog_id, Channel *item, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *dbl, const char *db_path) {
     if (dbl != NULL && db_path != NULL) {
 #ifdef MODE_DEBUG
         fprintf(stderr, "%s(): dbl xor db_path expected\n", F);
@@ -165,7 +169,7 @@ int getProgByIdFDB(int prog_id, Prog *item, EMList *em_list, SensorFTSList *sens
         db = dbl;
     }
     char q[LINE_SIZE];
-    ProgData data = {.em_list = em_list, .sensor_list = sensor_list, .prog = item, .db_data = db};
+    ChannelData data = {.em_list = em_list, .sensor_list = sensor_list, .channel = item, .db_data = db};
     snprintf(q, sizeof q, "select * from prog where id=%d", prog_id);
     if (!db_exec(db, q, getProg_callback, &data)) {
 #ifdef MODE_DEBUG
@@ -178,7 +182,7 @@ int getProgByIdFDB(int prog_id, Prog *item, EMList *em_list, SensorFTSList *sens
     return 1;
 }
 
-int addProg(Prog *item, ProgList *list) {
+int addChannel(Channel *item, ChannelList *list, Mutex *list_mutex) {
     if (list->length >= INT_MAX) {
 #ifdef MODE_DEBUG
         fprintf(stderr, "%s(): can not load prog with id=%d - list length exceeded\n", F, item->id);
@@ -186,9 +190,9 @@ int addProg(Prog *item, ProgList *list) {
         return 0;
     }
     if (list->top == NULL) {
-        lockProgList();
+        lockMutex(list_mutex);
         list->top = item;
-        unlockProgList();
+        unlockMutex(list_mutex);
     } else {
         lockMutex(&list->last->mutex);
         list->last->next = item;
@@ -202,9 +206,10 @@ int addProg(Prog *item, ProgList *list) {
     return 1;
 }
 
-int addProgById(int prog_id, ProgList *list, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *db_data, const char *db_data_path) {
+int addChannelById(int prog_id, ChannelList *list, EMList *em_list, SensorFTSList *sensor_list, sqlite3 *db_data, const char *db_data_path, Mutex *list_mutex) {
     extern struct timespec cycle_duration;
-    Prog *rprog = getProgById(prog_id, list);
+    Channel *rprog;
+    LLIST_GETBYID(rprog,list,prog_id)
     if (rprog != NULL) {
 #ifdef MODE_DEBUG
         fprintf(stderr, "%s(): program with id = %d is being controlled by program\n", F, rprog->id);
@@ -212,7 +217,7 @@ int addProgById(int prog_id, ProgList *list, EMList *em_list, SensorFTSList *sen
         return 0;
     }
 
-    Prog *item = malloc(sizeof *(item));
+    Channel *item = malloc(sizeof *(item));
     if (item == NULL) {
         fprintf(stderr, "%s(): failed to allocate memory\n", F);
         return 0;
@@ -236,18 +241,18 @@ int addProgById(int prog_id, ProgList *list, EMList *em_list, SensorFTSList *sen
         free(item);
         return 0;
     }
-    item->reg.sensor.peer.fd = &item->sock_fd;
-    item->reg.green_light.sensor.peer.fd = &item->sock_fd;
-    item->reg.heater.em.peer.fd = &item->sock_fd;
-    item->reg.cooler.em.peer.fd = &item->sock_fd;
-    item->reg.secure_out.error_code=&item->error_code;
+    item->prog.sensor.peer.fd = &item->sock_fd;
+    item->prog.green_light.sensor.peer.fd = &item->sock_fd;
+    item->prog.heater.em.peer.fd = &item->sock_fd;
+    item->prog.cooler.em.peer.fd = &item->sock_fd;
+    item->prog.secure_out.error_code=&item->error_code;
     if (!checkProg(item)) {
         freeSocketFd(&item->sock_fd);
         freeMutex(&item->mutex);
         free(item);
         return 0;
     }
-    if (!addProg(item, list)) {
+    if (!addChannel(item, list, list_mutex)) {
         freeSocketFd(&item->sock_fd);
         freeMutex(&item->mutex);
         free(item);
@@ -262,50 +267,48 @@ int addProgById(int prog_id, ProgList *list, EMList *em_list, SensorFTSList *sen
     return 1;
 }
 
-int deleteProgById(int id, ProgList *list, const char* db_path) {
+int deleteChannelById(int id, ChannelList *list, const char* db_path, Mutex *list_mutex) {
 #ifdef MODE_DEBUG
     printf("prog to delete: %d\n", id);
 #endif
-    Prog *prev = NULL, *curr;
+    Channel *prev = NULL;
     int done = 0;
-    curr = list->top;
-    while (curr != NULL) {
+    FOREACH_LLIST(curr,list,Channel) {
         if (curr->id == id) {
             if (prev != NULL) {
                 lockMutex(&prev->mutex);
                 prev->next = curr->next;
                 unlockMutex(&prev->mutex);
             } else {//curr=top
-                lockProgList();
+                lockMutex(list_mutex);
                 list->top = curr->next;
-                unlockProgList();
+                unlockMutex(list_mutex);
             }
             if (curr == list->last) {
                 list->last = prev;
             }
             list->length--;
-            stopProgThread(curr);
+            STOP_CHANNEL_THREAD(curr);
             db_saveTableFieldInt("prog", "load", curr->id, 0, NULL, db_data_path);
-            freeProg(curr);
+            freeChannel(curr);
 #ifdef MODE_DEBUG
-            printf("prog with id: %d deleted from prog_list\n", id);
+            printf("channel with id: %d has been deleted from channel_list\n", id);
 #endif
             done = 1;
             break;
         }
         prev = curr;
-        curr = curr->next;
     }
 
     return done;
 }
 
 int loadActiveProg_callback(void *d, int argc, char **argv, char **azColName) {
-    ProgData *data = d;
-    for (int i = 0; i < argc; i++) {
+    ChannelData *data = d;
+    DB_FOREACH_COLUMN {
         if (DB_COLUMN_IS("id")) {
-            int id = atoi(argv[i]);
-            addProgById(id, data->prog_list, data->em_list, data->sensor_list, data->db_data, NULL);
+            int id = DB_CVI;
+            addChannelById(id, data->channel_list, data->em_list, data->sensor_list, data->db_data, NULL,data->channel_list_mutex);
         } else {
 #ifdef MODE_DEBUG
             fprintf(stderr, "%s(): unknown column (we will skip it): %s\n", F, DB_COLUMN_NAME);
@@ -315,12 +318,12 @@ int loadActiveProg_callback(void *d, int argc, char **argv, char **azColName) {
     return EXIT_SUCCESS;
 }
 
-int loadActiveProg(ProgList *list, EMList *em_list, SensorFTSList *sensor_list, char *db_path) {
+int loadActiveProg(ChannelList *list, EMList *em_list, SensorFTSList *sensor_list, char *db_path, Mutex *list_mutex) {
     sqlite3 *db;
     if (!db_open(db_path, &db)) {
         return 0;
     }
-    ProgData data = {.prog_list = list, .em_list = em_list, .sensor_list = sensor_list, .db_data = db};
+    ChannelData data = {.channel_list = list, .em_list = em_list, .sensor_list = sensor_list, .db_data = db, .channel_list_mutex=list_mutex};
     char *q = "select id from prog where load=1";
     if (!db_exec(db, q, loadActiveProg_callback, &data)) {
 #ifdef MODE_DEBUG
