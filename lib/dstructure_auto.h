@@ -3,7 +3,7 @@
 
 #define DEC_PLIST(T) typedef struct {T **item; size_t length;size_t max_length;} T##PList;
 #define DEC_LIST(T) typedef struct {T *item; size_t length;size_t max_length;} T##List;
-#define DEC_LLIST(T) typedef struct {T *top; T *last; size_t length;} T##List;
+#define DEC_LLIST(T) typedef struct {T *top; T *last; size_t length;} T##LList;
 #define LIST_INITIALIZER {.item = NULL, .length = 0, .max_length = 0}
 #define LLIST_INITIALIZER {.top = NULL, .last = NULL, .length = 0}
 
@@ -25,7 +25,8 @@
 //#define DEC_FUN_LIST_GET_BY_IDSTR(T) extern T *get ## T ## ById(char *id, const T ## List *list);
 //#define DEC_FUN_LLIST_GET_BY_ID(T) extern T *get ## T ## ById(int id, const T ## List *list);
 
-#define LIST_GETBYID(DEST,LIST,ID) (DEST) = NULL;for (size_t I = 0; I < (LIST)->length; I++) {if ((LIST)->item[I].id == (ID)) {(DEST) = (LIST)->item + I;}}
+#define LIST_GETBYFIELD(FIELD, DEST,LIST,NEEDLE) (DEST) = NULL;for (size_t I = 0; I < (LIST)->length; I++) {if ((LIST)->item[I].FIELD == (NEEDLE)) {(DEST) = (LIST)->item + I;}}
+#define LIST_GETBYID(DEST,LIST,ID) LIST_GETBYFIELD(id, DEST,LIST,ID)
 #define LIST_GETBYIDSTR(DEST,LIST,ID) (DEST) = NULL;for (size_t I = 0; I < (LIST)->length; I++) {if (strcmp((LIST)->item[I].id, ID)==0) {(DEST) = (LIST)->item + I;}}
 //#define LLIST_GETBYID(DEST,LIST,ID)(DEST) = (LIST)->top;while((DEST)!=NULL){if((DEST)->id==ID){break;}(DEST)=(DEST)->next;}
 #define LLIST_GETBYID(DEST,LIST,ID)for((DEST) = (LIST)->top;(DEST)!=NULL;(DEST)=(DEST)->next)if((DEST)->id==ID)break;

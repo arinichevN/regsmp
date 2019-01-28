@@ -1,2 +1,2 @@
-port	cd_sec	cd_nsec	db_data_path
-49192	5	0	/etc/controller/regsmp/data.db
+peer_id	db_path
+regsmp_1	./db/data.db

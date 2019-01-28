@@ -16,7 +16,7 @@
 #include "lib/acp/main.h"
 #include "lib/acp/app.h"
 #include "lib/acp/regulator.h"
-#include "lib/acp/prog.h"
+#include "lib/acp/channel.h"
 #include "lib/acp/regonf.h"
 #include "lib/acp/regsmp.h"
 
@@ -54,24 +54,13 @@ typedef struct channel_st Channel;
 
 DEC_LLIST(Channel)
 
-typedef struct {
-    sqlite3 *db_data;
-    EMList *em_list;
-    SensorFTSList *sensor_list;
-    Channel *channel;
-    ChannelList *channel_list;
-    Mutex * channel_list_mutex;
-} ChannelData;
+extern int readSettings(TSVresult* r,char *config_path, char **peer_id, char **db_path) ;
 
-extern int readSettings() ;
-
-extern void initApp() ;
+extern int initApp() ;
 
 extern int initData() ;
 
 extern void serverRun(int *state, int init_state) ;
-
-extern void progControl(Channel *item) ;
 
 extern void *threadFunction(void *arg) ;
 
@@ -80,8 +69,6 @@ extern void freeData() ;
 extern void freeApp() ;
 
 extern void exit_nicely() ;
-
-extern void exit_nicely_e(char *s) ;
 
 #endif 
 

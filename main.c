@@ -1,515 +1,440 @@
-
 #include "main.h"
 
 int app_state = APP_INIT;
 
 TSVresult config_tsv = TSVRESULT_INITIALIZER;
-char * db_data_path;
+char * db_path;
+char * peer_id;
 
 int sock_port = -1;
 int sock_fd = -1;
 
 Peer peer_client = {.fd = &sock_fd, .addr_size = sizeof peer_client.addr};
-struct timespec cycle_duration = {0, 0};
 Mutex channel_list_mutex = MUTEX_INITIALIZER;
 
-PeerList peer_list = LIST_INITIALIZER;
-SensorFTSList sensor_list = LIST_INITIALIZER;
-EMList em_list = LIST_INITIALIZER;
-ChannelList channel_list = LLIST_INITIALIZER;
+ChannelLList channel_list = LLIST_INITIALIZER;
 
 #include "util.c"
 #include "db.c"
 
-int readSettings ( TSVresult* r, const char *data_path, int *port, struct timespec *cd, char **db_data_path ) {
-    if ( !TSVinit ( r, data_path ) ) {
+int readSettings ( TSVresult* r,char *config_path, char **peer_id, char **db_path ) {
+    if ( !TSVinit ( r, config_path ) ) {
         return 0;
-        }
-    int _port = TSVgetis ( r, 0, "port" );
-    int _cd_sec = TSVgetis ( r, 0, "cd_sec" );
-    int _cd_nsec = TSVgetis ( r, 0, "cd_nsec" );
-    char *_db_data_path = TSVgetvalues ( r, 0, "db_data_path" );
+    }
+    char *_peer_id = TSVgetvalues ( r, 0, "peer_id" );
+    char *_db_path = TSVgetvalues ( r, 0, "db_path" );
     if ( TSVnullreturned ( r ) ) {
         return 0;
-        }
-    *port = _port;
-    cd->tv_sec = _cd_sec;
-    cd->tv_nsec = _cd_nsec;
-    *db_data_path = _db_data_path;
+    }
+    *peer_id = _peer_id;
+    *db_path = _db_path;
     return 1;
-    }
+}
 
-void initApp() {
-    if ( !readSettings ( &config_tsv, CONFIG_FILE, &sock_port, &cycle_duration, &db_data_path ) ) {
-        exit_nicely_e ( "initApp: failed to read settings\n" );
-        }
-    if ( !initMutex ( &channel_list_mutex ) ) {
-        exit_nicely_e ( "initApp: failed to initialize channel mutex\n" );
-        }
-    if ( !initServer ( &sock_fd, sock_port ) ) {
-        exit_nicely_e ( "initApp: failed to initialize udp server\n" );
-        }
+int initApp() {
+    if ( !readSettings ( &config_tsv, CONFIG_FILE, &peer_id, &db_path ) ) {
+        putsde ( "failed to read settings\n" );
+        return 0;
     }
+    if ( !initMutex ( &channel_list_mutex ) ) {
+        TSVclear ( &config_tsv );
+        putsde ( "failed to initialize channel mutex\n" );
+        return 0;
+    }
+    if ( !config_getPort ( &sock_port, peer_id, NULL, db_path ) ) {
+        freeMutex ( &channel_list_mutex );
+        TSVclear ( &config_tsv );
+        putsde ( "failed to read port\n" );
+        return 0;
+    }
+    if ( !initServer ( &sock_fd, sock_port ) ) {
+        freeMutex ( &channel_list_mutex );
+        TSVclear ( &config_tsv );
+        putsde ( "failed to initialize udp server\n" );
+        return 0;
+    }
+    printdo ( "initApp:\n\tsock_port=%d\n\tdb_path=%s\n",sock_port, db_path );
+    return 1;
+}
 
 int initData() {
-    if ( !config_getPeerList ( &peer_list, NULL, db_data_path ) ) {
-        return 0;
-        }
-    if ( !config_getSensorFTSList ( &sensor_list, &peer_list, db_data_path ) ) {
-        freePeerList ( &peer_list );
-        return 0;
-        }
-    if ( !config_getEMList ( &em_list, &peer_list, db_data_path ) ) {
-        FREE_LIST ( &sensor_list );
-        freePeerList ( &peer_list );
-        return 0;
-        }
-    if ( !loadActiveProg ( &channel_list, &em_list, &sensor_list, db_data_path, &channel_list_mutex ) ) {
+    if ( !loadActiveChannel ( &channel_list, &channel_list_mutex,  db_path ) ) {
         freeChannelList ( &channel_list );
-        FREE_LIST ( &em_list );
-        FREE_LIST ( &sensor_list );
-        freePeerList ( &peer_list );
         return 0;
-        }
-    return 1;
     }
-#define PARSE_I1LIST acp_requestDataToI1List(&request, &i1l);if (i1l.length <= 0) {return;}
-#define PARSE_I1F1LIST acp_requestDataToI1F1List(&request, &i1f1l);if (i1f1l.length <= 0) {return;}
-#define PARSE_I2LIST acp_requestDataToI2List(&request, &i2l);if (i2l.length <= 0) {return;}
-#define PARSE_I1S1LIST acp_requestDataToI1S1List(&request, &i1s1l);if (i1s1l.length <= 0) {return;}
+    return 1;
+}
 
 void serverRun ( int *state, int init_state ) {
     SERVER_HEADER
     SERVER_APP_ACTIONS
-    DEF_SERVER_I1LIST
-    DEF_SERVER_I2LIST
-    DEF_SERVER_I1F1LIST
-    DEF_SERVER_I1S1LIST
-    if ( ACP_CMD_IS ( ACP_CMD_PROG_STOP ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_STOP ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_turnOff ( &item->prog );
                     unlockMutex ( &item->mutex );
-                    }
-                deleteChannelById ( i1l.item[i], &channel_list, db_data_path , &channel_list_mutex);
                 }
+                deleteChannelById ( i1l.item[i], &channel_list , &channel_list_mutex, NULL, db_path );
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_START ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            addChannelById ( i1l.item[i], &channel_list, &em_list, &sensor_list, NULL, db_data_path , &channel_list_mutex);
-            }
         return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_START ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
+            addChannelById ( i1l.item[i], &channel_list, &channel_list_mutex ,  NULL, db_path );
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_RESET ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_RESET ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_turnOff ( &item->prog );
                     unlockMutex ( &item->mutex );
-                    }
-                deleteChannelById ( i1l.item[i], &channel_list, db_data_path , &channel_list_mutex);
                 }
+                deleteChannelById ( i1l.item[i], &channel_list, &channel_list_mutex, NULL, db_path );
             }
-        for ( int i = 0; i < i1l.length; i++ ) {
-            addChannelById ( i1l.item[i], &channel_list, &em_list, &sensor_list, NULL, db_data_path , &channel_list_mutex);
-            }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_ENABLE ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+        FORLISTN(i1l, i) {
+            addChannelById ( i1l.item[i], &channel_list, &channel_list_mutex, NULL, db_path );
+        }
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_ENABLE ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_enable ( &item->prog );
-                    if ( item->save ) db_saveTableFieldInt ( "prog", "enable", item->id, 1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldInt ( "channel", "enable", item->id, 1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_DISABLE ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_DISABLE ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_disable ( &item->prog );
-                    if ( item->save ) db_saveTableFieldInt ( "prog", "enable", item->id, 0, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldInt ( "channel", "enable", item->id, 0, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_SET_SAVE ) ) {
-        PARSE_I2LIST
-        for ( int i = 0; i < i2l.length; i++ ) {
-            // Channel *item = getChannelById(i2l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_SET_SAVE ) ) {
+        SERVER_GET_I2LIST_FROM_REQUEST
+        FORLISTN(i2l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i2l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     item->save = i2l.item[i].p1;
-                    if ( item->save ) db_saveTableFieldInt ( "prog", "save", item->id, i2l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldInt ( "channel", "save", item->id, i2l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
+        }
         return;
-        }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_GET_DATA_RUNTIME ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_GET_DATA_RUNTIME ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgRuntime ( item, &response ) ) {
+                if ( !bufCatChannelRuntime ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_GET_DATA_INIT ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_GET_DATA_INIT ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgInit ( item, &response ) ) {
+                if ( !bufCatChannelInit ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_GET_ENABLED ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_GET_ENABLED ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgEnabled ( item, &response ) ) {
+                if ( !bufCatChannelEnabled ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_GET_GOAL ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_GET_GOAL ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgGoal ( item, &response ) ) {
+                if ( !bufCatChannelGoal ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_PROG_GET_ERROR ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_CHANNEL_GET_ERROR ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgError ( item, &response ) ) {
+                if ( !bufCatChannelError ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_GET_FTS ) ) {
-        PARSE_I1LIST
-        for ( int i = 0; i < i1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1l.item[i], &channel_list);
+    } else if ( ACP_CMD_IS ( ACP_CMD_GET_FTS ) ) {
+        SERVER_GET_I1LIST_FROM_REQUEST
+        FORLISTN(i1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1l.item[i] )
             if ( item != NULL ) {
-                if ( !bufCatProgFTS ( item, &response ) ) {
+                if ( !bufCatChannelFTS ( item, &response ) ) {
                     return;
-                    }
                 }
             }
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_HEATER_POWER ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_HEATER_POWER ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterPower ( &item->prog, i1f1l.item[i].p1 );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_COOLER_POWER ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_COOLER_POWER ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerPower ( &item->prog, i1f1l.item[i].p1 );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_HEATER_MODE ) ) {
-        PARSE_I1S1LIST
-        for ( int i = 0; i < i1s1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1s1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_HEATER_MODE ) ) {
+        SERVER_GET_I1S1LIST_FROM_REQUEST
+        FORLISTN(i1s1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1s1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterMode ( &item->prog, i1s1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldText ( "prog", "heater_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldText ( "channel", "heater_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_COOLER_MODE ) ) {
-        PARSE_I1S1LIST
-        for ( int i = 0; i < i1s1l.length; i++ ) {
-            // Channel *item = getChannelById(i1s1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_COOLER_MODE ) ) {
+        SERVER_GET_I1S1LIST_FROM_REQUEST
+        FORLISTN(i1s1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1s1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerMode ( &item->prog, i1s1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldText ( "prog", "cooler_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldText ( "channel", "cooler_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_EM_MODE ) ) {
-        PARSE_I1S1LIST
-        for ( int i = 0; i < i1s1l.length; i++ ) {
-            // Channel *item = getChannelById(i1s1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_EM_MODE ) ) {
+        SERVER_GET_I1S1LIST_FROM_REQUEST
+        FORLISTN(i1s1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1s1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setEMMode ( &item->prog, i1s1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldText ( "prog", "em_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldText ( "channel", "em_mode", i1s1l.item[i].p0, i1s1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_CHANGE_GAP ) ) {
-        PARSE_I2LIST
-        for ( int i = 0; i < i2l.length; i++ ) {
-            //  Channel *item = getChannelById(i2l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_CHANGE_GAP ) ) {
+        SERVER_GET_I2LIST_FROM_REQUEST
+        FORLISTN(i2l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i2l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setChangeGap ( &item->prog, i2l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldInt ( "prog", "change_gap", i2l.item[i].p0, i2l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldInt ( "channel", "change_gap", i2l.item[i].p0, i2l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_GOAL ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REG_PROG_SET_GOAL ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setGoal ( &item->prog, i1f1l.item[i].p1 );
                     regpidonfhc_secureOutTouch ( &item->prog );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "goal", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "goal", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGONF_PROG_SET_HEATER_DELTA ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            // Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGONF_PROG_SET_HEATER_DELTA ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterDelta ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "heater_delta", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "heater_delta", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KP ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            // Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KP ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterKp ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "heater_kp", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "heater_kp", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KI ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KI ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterKi ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "heater_ki", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "heater_ki", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KD ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //  Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_HEATER_KD ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setHeaterKd ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "heater_kd", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "heater_kd", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGONF_PROG_SET_COOLER_DELTA ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            // Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGONF_PROG_SET_COOLER_DELTA ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerDelta ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "cooler_delta", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "cooler_delta", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KP ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KP ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerKp ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "cooler_kp", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "cooler_kp", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KI ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            // Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KI ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerKi ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "cooler_ki", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "cooler_ki", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
-    else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KD ) ) {
-        PARSE_I1F1LIST
-        for ( int i = 0; i < i1f1l.length; i++ ) {
-            //Channel *item = getChannelById(i1f1l.item[i].p0, &channel_list);
+        return;
+    } else if ( ACP_CMD_IS ( ACP_CMD_REGSMP_PROG_SET_COOLER_KD ) ) {
+        SERVER_GET_I1F1LIST_FROM_REQUEST
+        FORLISTN(i1f1l, i) {
             Channel *item;
             LLIST_GETBYID ( item, &channel_list, i1f1l.item[i].p0 )
             if ( item != NULL ) {
                 if ( lockMutex ( &item->mutex ) ) {
                     regpidonfhc_setCoolerKd ( &item->prog, i1f1l.item[i].p1 );
-                    if ( item->save ) db_saveTableFieldFloat ( "prog", "cooler_kd", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_data_path );
+                    if ( item->save ) db_saveTableFieldFloat ( "channel", "cooler_kd", i1f1l.item[i].p0, i1f1l.item[i].p1, NULL, db_path );
                     unlockMutex ( &item->mutex );
-                    }
                 }
             }
-        return;
         }
+        return;
+    }
 
     acp_responseSend ( &response, &peer_client );
-    }
-
-void progControl ( Channel * item ) {
-#ifdef MODE_DEBUG
-    printf ( "progId: %d ", item->id );
-#endif
-    regpidonfhc_control ( &item->prog );
-    }
+}
 
 void cleanup_handler ( void *arg ) {
     Channel *item = arg;
     printf ( "cleaning up thread %d\n", item->id );
-    }
+}
 
 void *threadFunction ( void *arg ) {
     Channel *item = arg;
-    printdo ( "thread for program with id=%d has been started\n", item->id );
+    printdo ( "thread for channel with id=%d has been started\n", item->id );
 
 #ifdef MODE_DEBUG
     pthread_cleanup_push ( cleanup_handler, item );
@@ -519,50 +444,39 @@ void *threadFunction ( void *arg ) {
         int old_state;
         if ( threadCancelDisable ( &old_state ) ) {
             if ( lockMutex ( &item->mutex ) ) {
-                progControl ( item );
+#ifdef MODE_DEBUG
+                printf ( "channelId: %d ", item->id );
+#endif
+                regpidonfhc_control ( &item->prog );
                 unlockMutex ( &item->mutex );
-                }
-            threadSetCancelState ( old_state );
             }
-        sleepRest ( item->cycle_duration, t1 );
+            threadSetCancelState ( old_state );
         }
+        delayTsIdleRest ( item->cycle_duration, t1 );
+    }
 #ifdef MODE_DEBUG
     pthread_cleanup_pop ( 1 );
 #endif
-    }
+}
 
 void freeData() {
     STOP_ALL_CHANNEL_THREADS ( &channel_list );
     secure();
     freeChannelList ( &channel_list );
-    FREE_LIST ( &em_list );
-    FREE_LIST ( &sensor_list );
-    freePeerList ( &peer_list );
-    putsdo ( "freeData(): done\n" );
-    }
+}
 
 void freeApp() {
     freeData();
     freeSocketFd ( &sock_fd );
     freeMutex ( &channel_list_mutex );
     TSVclear ( &config_tsv );
-    }
+}
 
-void exit_nicely() {
+void exit_nicely ( ) {
     freeApp();
-#ifdef MODE_DEBUG
-    puts ( "\nBye..." );
-#endif
+    putsdo ( "\nexiting now...\n" );
     exit ( EXIT_SUCCESS );
-    }
-
-void exit_nicely_e ( char *s ) {
-#ifdef MODE_DEBUG
-    fprintf ( stderr, "%s", s );
-#endif
-    freeApp();
-    exit ( EXIT_FAILURE );
-    }
+}
 
 int main ( int argc, char** argv ) {
 #ifndef MODE_DEBUG
@@ -571,44 +485,48 @@ int main ( int argc, char** argv ) {
     conSig ( &exit_nicely );
     if ( mlockall ( MCL_CURRENT | MCL_FUTURE ) == -1 ) {
         perrorl ( "mlockall()" );
-        }
+    }
     int data_initialized = 0;
     while ( 1 ) {
 #ifdef MODE_DEBUG
         printf ( "%s(): %s %d\n", F, getAppState ( app_state ), data_initialized );
 #endif
         switch ( app_state ) {
-            case APP_INIT:
-                initApp();
-                app_state = APP_INIT_DATA;
-                break;
-            case APP_INIT_DATA:
-                data_initialized = initData();
-                app_state = APP_RUN;
-                delayUsIdle ( 1000000 );
-                break;
-            case APP_RUN:
-                serverRun ( &app_state, data_initialized );
-                break;
-            case APP_STOP:
-                freeData();
-                data_initialized = 0;
-                app_state = APP_RUN;
-                break;
-            case APP_RESET:
-                freeApp();
-                delayUsIdle ( 1000000 );
-                data_initialized = 0;
-                app_state = APP_INIT;
-                break;
-            case APP_EXIT:
-                exit_nicely();
-                break;
-            default:
-                exit_nicely_e ( "main: unknown application state" );
-                break;
+        case APP_INIT:
+            if ( !initApp() ) {
+                return ( EXIT_FAILURE );
             }
+            app_state = APP_INIT_DATA;
+            break;
+        case APP_INIT_DATA:
+            data_initialized = initData();
+            app_state = APP_RUN;
+            delayUsIdle ( 1000000 );
+            break;
+        case APP_RUN:
+            serverRun ( &app_state, data_initialized );
+            break;
+        case APP_STOP:
+            freeData();
+            data_initialized = 0;
+            app_state = APP_RUN;
+            break;
+        case APP_RESET:
+            freeApp();
+            delayUsIdle ( 1000000 );
+            data_initialized = 0;
+            app_state = APP_INIT;
+            break;
+        case APP_EXIT:
+            exit_nicely ( );
+            break;
+        default:
+            freeApp();
+            putsde ( "unknown application state\n" );
+            return ( EXIT_FAILURE );
         }
-    freeApp();
-    return ( EXIT_SUCCESS );
     }
+    freeApp();
+    putsde ( "unexpected while break\n" );
+    return ( EXIT_FAILURE );
+}

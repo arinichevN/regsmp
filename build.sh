@@ -50,23 +50,26 @@ function conf_autostart {
 }
 
 function build_lib {
-	gcc $1  -c app.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
+	gcc $1  -c app.c -D_REENTRANT $DEBUG_PARAM && \
 	gcc $1  -c crc.c -D_REENTRANT $DEBUG_PARAM && \
-	gcc $1  -c dbl.c -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lpthread -lsqlite3 && \
-	gcc $1  -c configl.c -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $DEBUG_PARAM -lpthread -lsqlite3 && \
-	gcc $1  -c gpio.c -D_REENTRANT $DEBUG_PARAM  -lpthread && \
-	gcc $1  -c timef.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1  -c udp.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1  -c util.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1  -c tsv.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1  -c pid.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
-	gcc $1  -c regpidonfhc.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
+	gcc $1  -c dbl.c -D_REENTRANT $DEBUG_PARAM  && \
+	gcc $1  -c configl.c -D_REENTRANT $DEBUG_PARAM  && \
+	gcc $1  -c gpio.c -D_REENTRANT $DEBUG_PARAM  && \
+	gcc $1  -c timef.c -D_REENTRANT $DEBUG_PARAM && \
+	gcc $1  -c udp.c -D_REENTRANT $DEBUG_PARAM && \
+	gcc $1  -c util.c -D_REENTRANT $DEBUG_PARAM && \
+	gcc $1  -c tsv.c -D_REENTRANT $DEBUG_PARAM && \
+	gcc $1  -c pid.c -D_REENTRANT $DEBUG_PARAM && \
+	gcc $1  -c regpidonfhc.c -D_REENTRANT $DEBUG_PARAM && \
+	if [ ! -f ../sqlite3.o ]; then
+    gcc $1 -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION -D_REENTRANT -c ../sqlite3.c $DEBUG_PARAM 
+    fi
 	cd acp && \
-	gcc   -c main.c -D_REENTRANT $DEBUG_PARAM -lpthread && \
+	gcc   -c main.c -D_REENTRANT $DEBUG_PARAM && \
 	cd ../ && \
 	echo "library: making archive..." && \
 	rm -f libpac.a
-	ar -crv libpac.a app.o crc.o dbl.o gpio.o timef.o udp.o util.o tsv.o configl.o pid.o regpidonfhc.o acp/main.o && echo "library: done"
+	ar -crv libpac.a app.o crc.o dbl.o gpio.o timef.o udp.o util.o tsv.o configl.o pid.o regpidonfhc.o ../sqlite3.o acp/main.o && echo "library: done"
 	rm -f *.o acp/*.o
 }
 
@@ -76,7 +79,7 @@ function build {
 	cd lib && \
 	build_lib $1 && \
 	cd ../ 
-	gcc -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $1 $3  main.c -o $2 $DEBUG_PARAM -lpthread -lsqlite3 -L./lib -lpac && echo "Application successfully compiled. Launch command: sudo ./"$2
+	gcc -D_REENTRANT -DSQLITE_THREADSAFE=2 -DSQLITE_OMIT_LOAD_EXTENSION $1 $3  main.c -o $2 $DEBUG_PARAM -lpthread -L./lib -lpac && echo "Application successfully compiled. Launch command: sudo ./"$2
 }
 
 function full {
